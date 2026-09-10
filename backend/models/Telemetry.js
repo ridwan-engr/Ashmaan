@@ -5,7 +5,6 @@ const telemetrySchema = new mongoose.Schema(
         site: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Site",
-            index: true,
         },
 
         installation: {
@@ -75,13 +74,11 @@ const telemetrySchema = new mongoose.Schema(
                 "OUTLIER",
             ],
             default: "VALID",
-            index: true,
         },
 
         source: {
             type: String,
             default: "VRM",
-            index: true,
         },
 
         aggregationLevel: {
@@ -96,7 +93,6 @@ const telemetrySchema = new mongoose.Schema(
                 "YEARLY",
             ],
             default: "RAW",
-            index: true,
         },
 
         vrmAttributeId: {
@@ -128,11 +124,6 @@ const telemetrySchema = new mongoose.Schema(
             type: String,
             default: null,
         },
-
-        raw: {
-            type: mongoose.Schema.Types.Mixed,
-            default: {},
-        },
     },
     {
         timestamps: true,
@@ -155,12 +146,6 @@ telemetrySchema.index({
     parameter: 1,
     timestamp: -1,
 });
-
-telemetrySchema.index({
-    site: 1,
-    timestamp: -1,
-});
-
 telemetrySchema.index(
   {
     installation: 1,
@@ -180,3 +165,5 @@ const Telemetry = mongoose.model(
 );
 
 export default Telemetry;
+
+

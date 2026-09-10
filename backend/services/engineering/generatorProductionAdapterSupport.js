@@ -1,0 +1,1400 @@
+// services/engineering/generatorProductionAdapterSupport.js
+
+/*
+|--------------------------------------------------------------------------
+| Phase 8.5I-A
+| Generator Production Adapter Support
+|--------------------------------------------------------------------------
+|
+| Purpose:
+|
+| - normalize actual MongoDB Telemetry records
+| - enforce RAW / VALID production evidence
+| - remove ambiguous duplicate telemetry
+| - resolve generator electrical-power source family BEFORE pure-engine call
+| - keep generator-device and system-level source families separate
+| - qualify generator power unit only from explicit telemetry metadata
+|
+| This file does NOT:
+|
+| - query MongoDB
+| - calculate runtime
+| - calculate energy
+| - calculate contribution
+| - infer availability
+| - infer fuel consumption
+|--------------------------------------------------------------------------
+*/
+
+
+export const GENERATOR_PRODUCTION_POWER_SOURCE =
+    Object.freeze({
+
+        TOTAL_1742:
+            "TOTAL_1742",
+
+        PHASE_428_434_438:
+            "PHASE_428_434_438",
+
+        PHASE_137_138_139:
+            "PHASE_137_138_139",
+
+        NONE:
+            "NONE",
+    });
+
+
+export const GENERATOR_PRODUCTION_POWER_UNIT =
+    Object.freeze({
+
+        W:
+            "W",
+
+        KW:
+            "KW",
+
+        UNRESOLVED:
+            "UNRESOLVED",
+    });
+
+
+export const GENERATOR_PRODUCTION_TOPOLOGY_STATUS =
+    Object.freeze({
+
+        QUALIFIED:
+            "QUALIFIED",
+
+        AMBIGUOUS:
+            "AMBIGUOUS",
+
+        UNAVAILABLE:
+            "UNAVAILABLE",
+    });
+
+
+export const GENERATOR_PRODUCTION_REASON =
+    Object.freeze({
+
+        POWER_SOURCE_QUALIFIED:
+            "POWER_SOURCE_QUALIFIED",
+
+        NO_GENERATOR_POWER_EVIDENCE:
+            "NO_GENERATOR_POWER_EVIDENCE",
+
+        MULTIPLE_SOURCE_DEVICES_AMBIGUOUS:
+            "MULTIPLE_SOURCE_DEVICES_AMBIGUOUS",
+
+        SELECTED_DEVICE_NOT_FOUND:
+            "SELECTED_DEVICE_NOT_FOUND",
+
+        INCOMPLETE_PHASE_SOURCE:
+            "INCOMPLETE_PHASE_SOURCE",
+
+        POWER_UNIT_QUALIFIED:
+            "POWER_UNIT_QUALIFIED",
+
+        POWER_UNIT_UNRESOLVED:
+            "POWER_UNIT_UNRESOLVED",
+
+        POWER_UNIT_CONFLICT:
+            "POWER_UNIT_CONFLICT",
+    });
+
+
+export const GENERATOR_PRODUCTION_ATTRIBUTES =
+    Object.freeze({
+
+        runtime: [
+            416,
+            421,
+            1029,
+        ],
+
+        loading: [
+            419,
+        ],
+
+        power: [
+            1742,
+            428,
+            434,
+            438,
+            137,
+            138,
+            139,
+        ],
+
+        servedLoadPrimary: [
+            131,
+            132,
+            133,
+        ],
+
+        servedLoadOutput: [
+            567,
+            568,
+            569,
+        ],
+    });
+
+
+export const GENERATOR_PRODUCTION_QUERY_ATTRIBUTES =
+    Object.freeze(
+        Array.from(
+            new Set([
+
+                ...GENERATOR_PRODUCTION_ATTRIBUTES
+                    .runtime,
+
+                ...GENERATOR_PRODUCTION_ATTRIBUTES
+                    .loading,
+
+                ...GENERATOR_PRODUCTION_ATTRIBUTES
+                    .power,
+
+                ...GENERATOR_PRODUCTION_ATTRIBUTES
+                    .servedLoadPrimary,
+
+                ...GENERATOR_PRODUCTION_ATTRIBUTES
+                    .servedLoadOutput,
+            ])
+        )
+    );
+
+
+const POWER_SOURCE_DEFINITIONS =
+    Object.freeze([
+
+        {
+            source:
+                GENERATOR_PRODUCTION_POWER_SOURCE
+                    .TOTAL_1742,
+
+            attributes: [
+                1742,
+            ],
+
+            mode:
+                "DIRECT_TOTAL",
+
+            priority:
+                1,
+        },
+
+        {
+            source:
+                GENERATOR_PRODUCTION_POWER_SOURCE
+                    .PHASE_428_434_438,
+
+            attributes: [
+                428,
+                434,
+                438,
+            ],
+
+            mode:
+                "THREE_PHASE",
+
+            priority:
+                2,
+        },
+
+        {
+            source:
+                GENERATOR_PRODUCTION_POWER_SOURCE
+                    .PHASE_137_138_139,
+
+            attributes: [
+                137,
+                138,
+                139,
+            ],
+
+            mode:
+                "THREE_PHASE",
+
+            priority:
+                3,
+        },
+    ]);
+
+
+/*
+|--------------------------------------------------------------------------
+| Helpers
+|--------------------------------------------------------------------------
+*/
+
+function finite(
+    value
+) {
+
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+
+        return null;
+    }
+
+
+    const numeric =
+        Number(
+            value
+        );
+
+
+    return Number.isFinite(
+        numeric
+    )
+        ? numeric
+        : null;
+}
+
+
+function asDate(
+    value
+) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+
+        return null;
+    }
+
+
+    const date =
+        value instanceof Date
+            ? value
+            : new Date(
+                value
+            );
+
+
+    return Number.isNaN(
+        date.getTime()
+    )
+        ? null
+        : date;
+}
+
+
+function normalizeDeviceInstance(
+    value
+) {
+
+    return String(
+        value ??
+        "UNKNOWN"
+    );
+}
+
+
+function normalizeQuality(
+    value
+) {
+
+    return String(
+        value ??
+        "VALID"
+    )
+        .trim()
+        .toUpperCase();
+}
+
+
+function normalizeAggregationLevel(
+    value
+) {
+
+    return String(
+        value ??
+        "RAW"
+    )
+        .trim()
+        .toUpperCase();
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Production telemetry normalization
+|--------------------------------------------------------------------------
+|
+| Production engineering analytics use:
+|
+| - valid timestamp
+| - valid VRM attribute id
+| - finite numeric evidence
+| - quality VALID
+| - aggregation RAW
+|
+| Missing/invalid/stale/estimated/outlier evidence is NOT converted to zero.
+|--------------------------------------------------------------------------
+*/
+
+export function normalizeGeneratorProductionTelemetry(
+    records = []
+) {
+
+    const accepted =
+        [];
+
+    let rejectedInvalidTimestamp =
+        0;
+
+    let rejectedInvalidAttribute =
+        0;
+
+    let rejectedNonNumeric =
+        0;
+
+    let rejectedQuality =
+        0;
+
+    let rejectedAggregation =
+        0;
+
+
+    for (
+        const record
+        of records ?? []
+    ) {
+
+        const timestamp =
+            asDate(
+                record?.timestamp
+            );
+
+
+        if (
+            !timestamp
+        ) {
+
+            rejectedInvalidTimestamp +=
+                1;
+
+            continue;
+        }
+
+
+        const attributeId =
+            finite(
+                record?.vrmAttributeId
+            );
+
+
+        if (
+            attributeId ===
+            null
+        ) {
+
+            rejectedInvalidAttribute +=
+                1;
+
+            continue;
+        }
+
+
+        const numericValue =
+            finite(
+                record?.numericValue ??
+                record?.value
+            );
+
+
+        if (
+            numericValue ===
+            null
+        ) {
+
+            rejectedNonNumeric +=
+                1;
+
+            continue;
+        }
+
+
+        if (
+            normalizeQuality(
+                record?.quality
+            ) !==
+            "VALID"
+        ) {
+
+            rejectedQuality +=
+                1;
+
+            continue;
+        }
+
+
+        if (
+            normalizeAggregationLevel(
+                record?.aggregationLevel
+            ) !==
+            "RAW"
+        ) {
+
+            rejectedAggregation +=
+                1;
+
+            continue;
+        }
+
+
+        accepted.push({
+
+            ...record,
+
+            timestamp,
+
+            vrmAttributeId:
+                Number(
+                    attributeId
+                ),
+
+            numericValue,
+
+            deviceInstance:
+                normalizeDeviceInstance(
+                    record?.deviceInstance
+                ),
+        });
+    }
+
+
+    accepted.sort(
+        (
+            a,
+            b
+        ) =>
+
+            a.timestamp -
+            b.timestamp
+    );
+
+
+    return {
+
+        records:
+            accepted,
+
+        evidence: {
+
+            inputRecordCount:
+                Array.isArray(
+                    records
+                )
+                    ? records.length
+                    : 0,
+
+            acceptedRecordCount:
+                accepted.length,
+
+            rejectedInvalidTimestamp,
+
+            rejectedInvalidAttribute,
+
+            rejectedNonNumeric,
+
+            rejectedQuality,
+
+            rejectedAggregation,
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Duplicate / conflict removal
+|--------------------------------------------------------------------------
+|
+| MongoDB already has a production uniqueness index, but the adapter remains
+| defensive because equivalent evidence can still arrive through differing
+| topology metadata.
+|
+| Key:
+| attribute + device instance + timestamp
+|
+| Same key + same numeric value:
+|     duplicate
+|
+| Same key + different numeric value:
+|     conflicting evidence
+|
+| Ambiguous keys are removed rather than silently selected.
+|--------------------------------------------------------------------------
+*/
+
+export function removeAmbiguousTelemetryDuplicates(
+    records = []
+) {
+
+    const groups =
+        new Map();
+
+
+    for (
+        const record
+        of records ?? []
+    ) {
+
+        const timestamp =
+            asDate(
+                record?.timestamp
+            );
+
+
+        const attributeId =
+            finite(
+                record?.vrmAttributeId
+            );
+
+
+        const numericValue =
+            finite(
+                record?.numericValue ??
+                record?.value
+            );
+
+
+        if (
+            !timestamp ||
+            attributeId ===
+                null ||
+            numericValue ===
+                null
+        ) {
+
+            continue;
+        }
+
+
+        const deviceInstance =
+            normalizeDeviceInstance(
+                record?.deviceInstance
+            );
+
+
+        const key =
+            [
+                Number(
+                    attributeId
+                ),
+
+                deviceInstance,
+
+                timestamp.getTime(),
+            ]
+                .join(
+                    "::"
+                );
+
+
+        if (
+            !groups.has(
+                key
+            )
+        ) {
+
+            groups.set(
+                key,
+                []
+            );
+        }
+
+
+        groups
+            .get(
+                key
+            )
+            .push({
+
+                record,
+
+                numericValue,
+            });
+    }
+
+
+    const output =
+        [];
+
+    let duplicateKeyCount =
+        0;
+
+    let conflictingKeyCount =
+        0;
+
+    let removedRecordCount =
+        0;
+
+
+    for (
+        const entries
+        of groups.values()
+    ) {
+
+        if (
+            entries.length ===
+            1
+        ) {
+
+            output.push(
+                entries[0]
+                    .record
+            );
+
+            continue;
+        }
+
+
+        const uniqueValues =
+            new Set(
+                entries.map(
+                    (entry) =>
+                        entry.numericValue
+                )
+            );
+
+
+        if (
+            uniqueValues.size ===
+            1
+        ) {
+
+            duplicateKeyCount +=
+                1;
+
+            removedRecordCount +=
+                entries.length -
+                1;
+
+            output.push(
+                entries[0]
+                    .record
+            );
+
+            continue;
+        }
+
+
+        /*
+         * Conflicting values:
+         *
+         * remove the entire ambiguous key.
+         */
+
+        conflictingKeyCount +=
+            1;
+
+        removedRecordCount +=
+            entries.length;
+    }
+
+
+    output.sort(
+        (
+            a,
+            b
+        ) =>
+            asDate(
+                a.timestamp
+            ) -
+            asDate(
+                b.timestamp
+            )
+    );
+
+
+    return {
+
+        records:
+            output,
+
+        evidence: {
+
+            duplicateKeyCount,
+
+            conflictingKeyCount,
+
+            removedRecordCount,
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Device grouping for one source family
+|--------------------------------------------------------------------------
+*/
+
+function groupSourceRecordsByDevice(
+    records,
+    sourceDefinition
+) {
+
+    const allowed =
+        new Set(
+            sourceDefinition
+                .attributes
+        );
+
+
+    const groups =
+        new Map();
+
+
+    for (
+        const record
+        of records
+    ) {
+
+        if (
+            !allowed.has(
+                Number(
+                    record
+                        .vrmAttributeId
+                )
+            )
+        ) {
+
+            continue;
+        }
+
+
+        const deviceInstance =
+            normalizeDeviceInstance(
+                record
+                    .deviceInstance
+            );
+
+
+        if (
+            !groups.has(
+                deviceInstance
+            )
+        ) {
+
+            groups.set(
+                deviceInstance,
+                []
+            );
+        }
+
+
+        groups
+            .get(
+                deviceInstance
+            )
+            .push(
+                record
+            );
+    }
+
+
+    return groups;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Determine whether one device has sufficient source-family evidence
+|--------------------------------------------------------------------------
+*/
+
+function qualifiesSourceDevice(
+    records,
+    sourceDefinition
+) {
+
+    if (
+        sourceDefinition.mode ===
+        "DIRECT_TOTAL"
+    ) {
+
+        const samples =
+            records.filter(
+                (record) =>
+                    Number(
+                        record
+                            .vrmAttributeId
+                    ) ===
+                    1742
+            );
+
+
+        return (
+            samples.length >=
+            2
+        );
+    }
+
+
+    /*
+     * For three-phase source qualification, every phase attribute must
+     * actually exist for the selected device.
+     *
+     * Exact timestamp alignment is deferred to 8.5I-B.
+     */
+
+    return sourceDefinition
+        .attributes
+        .every(
+            (attributeId) =>
+
+                records.some(
+                    (record) =>
+                        Number(
+                            record
+                                .vrmAttributeId
+                        ) ===
+                        attributeId
+                )
+        );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Production generator-power topology selection
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| Source priority is applied BEFORE cross-family device ambiguity:
+|
+| 1. attr 1742
+| 2. attrs 428/434/438
+| 3. attrs 137/138/139
+|
+| The three source families are alternatives.
+|
+| This specifically prevents a System Overview deviceInstance from causing
+| false ambiguity against a generator-controller deviceInstance.
+|--------------------------------------------------------------------------
+*/
+
+export function selectGeneratorProductionPowerTopology({
+    records = [],
+    selectedDeviceInstance = null,
+} = {}) {
+
+    for (
+        const sourceDefinition
+        of POWER_SOURCE_DEFINITIONS
+    ) {
+
+        const groups =
+            groupSourceRecordsByDevice(
+                records,
+                sourceDefinition
+            );
+
+
+        const qualifiedGroups =
+            Array.from(
+                groups.entries()
+            )
+                .filter(
+                    ([
+                        ,
+                        deviceRecords,
+                    ]) =>
+                        qualifiesSourceDevice(
+                            deviceRecords,
+                            sourceDefinition
+                        )
+                );
+
+
+        /*
+         * Explicit selection applies within the currently qualified
+         * highest-priority source family.
+         */
+
+        if (
+            selectedDeviceInstance !==
+                null &&
+            selectedDeviceInstance !==
+                undefined
+        ) {
+
+            const requested =
+                String(
+                    selectedDeviceInstance
+                );
+
+
+            const selected =
+                qualifiedGroups.find(
+                    ([
+                        deviceInstance,
+                    ]) =>
+                        deviceInstance ===
+                        requested
+                );
+
+
+            if (
+                selected
+            ) {
+
+                const [
+                    deviceInstance,
+                    selectedRecords,
+                ] =
+                    selected;
+
+
+                return {
+
+                    status:
+                        GENERATOR_PRODUCTION_TOPOLOGY_STATUS
+                            .QUALIFIED,
+
+                    reason:
+                        GENERATOR_PRODUCTION_REASON
+                            .POWER_SOURCE_QUALIFIED,
+
+                    source:
+                        sourceDefinition
+                            .source,
+
+                    mode:
+                        sourceDefinition
+                            .mode,
+
+                    priority:
+                        sourceDefinition
+                            .priority,
+
+                    attributes:
+                        [
+                            ...sourceDefinition
+                                .attributes,
+                        ],
+
+                    deviceInstance,
+
+                    records:
+                        selectedRecords,
+
+                    evidence: {
+
+                        qualifiedDeviceCount:
+                            qualifiedGroups
+                                .length,
+
+                        explicitDeviceSelection:
+                            true,
+                    },
+                };
+            }
+
+
+            /*
+             * Do not immediately return here.
+             *
+             * The explicit device might legitimately belong to a lower-priority
+             * source family.
+             */
+
+            continue;
+        }
+
+
+        if (
+            qualifiedGroups.length ===
+            0
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            qualifiedGroups.length >
+            1
+        ) {
+
+            return {
+
+                status:
+                    GENERATOR_PRODUCTION_TOPOLOGY_STATUS
+                        .AMBIGUOUS,
+
+                reason:
+                    GENERATOR_PRODUCTION_REASON
+                        .MULTIPLE_SOURCE_DEVICES_AMBIGUOUS,
+
+                source:
+                    sourceDefinition
+                        .source,
+
+                mode:
+                    sourceDefinition
+                        .mode,
+
+                priority:
+                    sourceDefinition
+                        .priority,
+
+                attributes:
+                    [
+                        ...sourceDefinition
+                            .attributes,
+                    ],
+
+                deviceInstance:
+                    null,
+
+                records:
+                    [],
+
+                evidence: {
+
+                    qualifiedDeviceCount:
+                        qualifiedGroups
+                            .length,
+
+                    deviceInstances:
+                        qualifiedGroups.map(
+                            ([
+                                deviceInstance,
+                            ]) =>
+                                deviceInstance
+                        ),
+
+                    explicitDeviceSelection:
+                        false,
+                },
+            };
+        }
+
+
+        const [
+            [
+                deviceInstance,
+                selectedRecords,
+            ],
+        ] =
+            qualifiedGroups;
+
+
+        return {
+
+            status:
+                GENERATOR_PRODUCTION_TOPOLOGY_STATUS
+                    .QUALIFIED,
+
+            reason:
+                GENERATOR_PRODUCTION_REASON
+                    .POWER_SOURCE_QUALIFIED,
+
+            source:
+                sourceDefinition
+                    .source,
+
+            mode:
+                sourceDefinition
+                    .mode,
+
+            priority:
+                sourceDefinition
+                    .priority,
+
+            attributes:
+                [
+                    ...sourceDefinition
+                        .attributes,
+                ],
+
+            deviceInstance,
+
+            records:
+                selectedRecords,
+
+            evidence: {
+
+                qualifiedDeviceCount:
+                    1,
+
+                explicitDeviceSelection:
+                    false,
+            },
+        };
+    }
+
+
+    return {
+
+        status:
+            GENERATOR_PRODUCTION_TOPOLOGY_STATUS
+                .UNAVAILABLE,
+
+        reason:
+            selectedDeviceInstance !==
+                null &&
+            selectedDeviceInstance !==
+                undefined
+                ? GENERATOR_PRODUCTION_REASON
+                    .SELECTED_DEVICE_NOT_FOUND
+                : GENERATOR_PRODUCTION_REASON
+                    .NO_GENERATOR_POWER_EVIDENCE,
+
+        source:
+            GENERATOR_PRODUCTION_POWER_SOURCE
+                .NONE,
+
+        mode:
+            null,
+
+        priority:
+            null,
+
+        attributes:
+            [],
+
+        deviceInstance:
+            null,
+
+        records:
+            [],
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Explicit power-unit qualification
+|--------------------------------------------------------------------------
+|
+| Accepted:
+|
+| W, watt, watts
+| kW, kilowatt, kilowatts
+|
+| Unit is not inferred from magnitude.
+|
+| Conflicting W/kW evidence is unresolved.
+|--------------------------------------------------------------------------
+*/
+
+function normalizeExplicitPowerUnit(
+    value
+) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+
+        return null;
+    }
+
+
+    const normalized =
+        String(
+            value
+        )
+            .trim()
+            .toLowerCase()
+            .replace(
+                /\s+/g,
+                ""
+            );
+
+
+    if (
+        [
+            "w",
+            "watt",
+            "watts",
+        ].includes(
+            normalized
+        )
+    ) {
+
+        return GENERATOR_PRODUCTION_POWER_UNIT
+            .W;
+    }
+
+
+    if (
+        [
+            "kw",
+            "kilowatt",
+            "kilowatts",
+        ].includes(
+            normalized
+        )
+    ) {
+
+        return GENERATOR_PRODUCTION_POWER_UNIT
+            .KW;
+    }
+
+
+    return null;
+}
+
+
+export function qualifyGeneratorProductionPowerUnit(
+    records = []
+) {
+
+    const observedUnits =
+        new Set();
+
+
+    for (
+        const record
+        of records ?? []
+    ) {
+
+        const candidates =
+            [
+                record?.unit,
+            ];
+
+
+        for (
+            const candidate
+            of candidates
+        ) {
+
+            const qualified =
+                normalizeExplicitPowerUnit(
+                    candidate
+                );
+
+
+            if (
+                qualified
+            ) {
+
+                observedUnits.add(
+                    qualified
+                );
+            }
+        }
+    }
+
+
+    if (
+        observedUnits.size ===
+        0
+    ) {
+
+        return {
+
+            status:
+                "UNAVAILABLE",
+
+            reason:
+                GENERATOR_PRODUCTION_REASON
+                    .POWER_UNIT_UNRESOLVED,
+
+            powerUnit:
+                GENERATOR_PRODUCTION_POWER_UNIT
+                    .UNRESOLVED,
+
+            evidence: {
+
+                observedQualifiedUnits:
+                    [],
+            },
+        };
+    }
+
+
+    if (
+        observedUnits.size >
+        1
+    ) {
+
+        return {
+
+            status:
+                "UNAVAILABLE",
+
+            reason:
+                GENERATOR_PRODUCTION_REASON
+                    .POWER_UNIT_CONFLICT,
+
+            powerUnit:
+                GENERATOR_PRODUCTION_POWER_UNIT
+                    .UNRESOLVED,
+
+            evidence: {
+
+                observedQualifiedUnits:
+                    Array.from(
+                        observedUnits
+                    ),
+            },
+        };
+    }
+
+
+    const [
+        powerUnit,
+    ] =
+        Array.from(
+            observedUnits
+        );
+
+
+    return {
+
+        status:
+            "QUALIFIED",
+
+        reason:
+            GENERATOR_PRODUCTION_REASON
+                .POWER_UNIT_QUALIFIED,
+
+        powerUnit,
+
+        evidence: {
+
+            observedQualifiedUnits: [
+                powerUnit,
+            ],
+
+            unitInferredFromMagnitude:
+                false,
+        },
+    };
+}
+
+
+export default {
+
+    GENERATOR_PRODUCTION_POWER_SOURCE,
+
+    GENERATOR_PRODUCTION_POWER_UNIT,
+
+    GENERATOR_PRODUCTION_TOPOLOGY_STATUS,
+
+    GENERATOR_PRODUCTION_REASON,
+
+    GENERATOR_PRODUCTION_ATTRIBUTES,
+
+    GENERATOR_PRODUCTION_QUERY_ATTRIBUTES,
+
+    normalizeGeneratorProductionTelemetry,
+
+    removeAmbiguousTelemetryDuplicates,
+
+    selectGeneratorProductionPowerTopology,
+
+    qualifyGeneratorProductionPowerUnit,
+};

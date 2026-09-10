@@ -1,0 +1,2274 @@
+// services/engineering/solarEnergyAnalyticsService.js
+
+import {
+    SOLAR_ATTRIBUTE_MAP,
+    SOLAR_UNIT_STATUS,
+} from "./solarAttributeMap.js";
+
+
+/*
+|--------------------------------------------------------------------------
+| ASHMAAN
+| Phase 8.7D — Solar Energy / Yield Analytics
+|--------------------------------------------------------------------------
+|
+| Pure engineering analytics service.
+|
+| PURPOSE
+|
+| Qualify Solar Charger yield / energy evidence without fabricating
+| engineering-energy semantics.
+|
+| Canonical Phase 8.7D evidence:
+|
+|   attr94  — current-day yield
+|   attr96  — previous-day yield
+|   attr285 — counter-like user yield
+|   attr340 — yield-delta evidence
+|
+| IMPORTANT
+|
+| This service DOES NOT:
+|
+| - query MongoDB
+| - persist telemetry
+| - infer kWh from magnitude
+| - infer units from attribute names
+| - integrate attr442 while its power unit is unresolved
+| - sum attr94 / attr96 / attr285 / attr340
+| - sum multiple Solar Chargers automatically
+| - treat repeated daily-yield samples as interval energy
+| - automatically label a counter decrease as a reset
+| - treat PV-to-battery / PV-to-consumers as total PV energy
+| - calculate availability
+| - calculate performance ratio
+| - calculate capacity factor
+| - infer installed PV capacity
+|--------------------------------------------------------------------------
+*/
+
+
+/*
+|--------------------------------------------------------------------------
+| Identity
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_ANALYTICS_PHASE =
+    "8.7D";
+
+
+export const SOLAR_ENERGY_ANALYTICS_FAMILY =
+    "SOLAR_ENERGY";
+
+
+/*
+|--------------------------------------------------------------------------
+| Status
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_ANALYTICS_STATUS =
+    Object.freeze({
+        CALCULATED:
+            "CALCULATED",
+
+        PARTIALLY_CALCULATED:
+            "PARTIALLY_CALCULATED",
+
+        UNAVAILABLE:
+            "UNAVAILABLE",
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Reasons
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_ANALYTICS_REASON =
+    Object.freeze({
+        SOLAR_ENERGY_CALCULATED:
+            "SOLAR_ENERGY_CALCULATED",
+
+        SOLAR_YIELD_UNIT_UNRESOLVED:
+            "SOLAR_YIELD_UNIT_UNRESOLVED",
+
+        COUNTER_SEMANTICS_UNRESOLVED:
+            "COUNTER_SEMANTICS_UNRESOLVED",
+
+        YIELD_DELTA_SEMANTICS_UNRESOLVED:
+            "YIELD_DELTA_SEMANTICS_UNRESOLVED",
+
+        NO_SOLAR_ENERGY_EVIDENCE:
+            "NO_SOLAR_ENERGY_EVIDENCE",
+
+        NO_VALID_SOLAR_ENERGY_SAMPLES:
+            "NO_VALID_SOLAR_ENERGY_SAMPLES",
+
+        DEVICE_TOPOLOGY_AMBIGUOUS:
+            "DEVICE_TOPOLOGY_AMBIGUOUS",
+
+        SELECTED_DEVICE_NOT_FOUND:
+            "SELECTED_DEVICE_NOT_FOUND",
+
+        UNIT_METADATA_CONFLICT:
+            "UNIT_METADATA_CONFLICT",
+
+        COUNTER_DECREASE_OBSERVED:
+            "COUNTER_DECREASE_OBSERVED",
+
+        INVALID_REPORTING_WINDOW:
+            "INVALID_REPORTING_WINDOW",
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Evidence paths
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_PATH =
+    Object.freeze({
+        DAILY_YIELD_94:
+            "DAILY_YIELD_94",
+
+        PREVIOUS_DAY_YIELD_96:
+            "PREVIOUS_DAY_YIELD_96",
+
+        USER_YIELD_COUNTER_285:
+            "USER_YIELD_COUNTER_285",
+
+        USER_YIELD_DELTA_340:
+            "USER_YIELD_DELTA_340",
+
+        NONE:
+            "NONE",
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Evidence semantics
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_DATA_KIND =
+    Object.freeze({
+        DAILY_HISTORY:
+            "DAILY_HISTORY",
+
+        COUNTER:
+            "COUNTER",
+
+        DELTA:
+            "DELTA",
+
+        NONE:
+            "NONE",
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Topology
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_TOPOLOGY_STATUS =
+    Object.freeze({
+        QUALIFIED:
+            "QUALIFIED",
+
+        AMBIGUOUS:
+            "AMBIGUOUS",
+
+        UNAVAILABLE:
+            "UNAVAILABLE",
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Default configuration
+|--------------------------------------------------------------------------
+*/
+
+export const DEFAULT_SOLAR_ENERGY_ANALYTICS_CONFIG =
+    Object.freeze({
+        requireValidQuality:
+            true,
+
+        requireRawAggregation:
+            true,
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Engineering boundaries
+|--------------------------------------------------------------------------
+*/
+
+export const SOLAR_ENERGY_ANALYTICS_BOUNDARIES =
+    Object.freeze({
+        missingMeansZero:
+            false,
+
+        unitInferredFromMagnitude:
+            false,
+
+        unitInferredFromAttributeName:
+            false,
+
+        unresolvedYieldLabelledKwh:
+            false,
+
+        repeatedDailySamplesSummed:
+            false,
+
+        dailyAndCounterYieldSummed:
+            false,
+
+        multipleDevicesAutomaticallyAggregated:
+            false,
+
+        counterDecreaseAutomaticallyReset:
+            false,
+
+        counterDecreaseAutomaticallyRollover:
+            false,
+
+        pvFlowContextUsedAsGeneration:
+            false,
+
+        unresolvedPowerIntegrated:
+            false,
+
+        installedCapacityInferred:
+            false,
+
+        irradianceInferred:
+            false,
+
+        availabilityCalculated:
+            false,
+
+        performanceRatioCalculated:
+            false,
+
+        capacityFactorCalculated:
+            false,
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Canonical attribute identities
+|--------------------------------------------------------------------------
+*/
+
+const YIELD_TODAY_ID =
+    SOLAR_ATTRIBUTE_MAP
+        .YIELD_TODAY
+        .id;
+
+
+const YIELD_YESTERDAY_ID =
+    SOLAR_ATTRIBUTE_MAP
+        .YIELD_YESTERDAY
+        .id;
+
+
+const USER_YIELD_ID =
+    SOLAR_ATTRIBUTE_MAP
+        .USER_YIELD
+        .id;
+
+
+const USER_YIELD_DELTA_ID =
+    SOLAR_ATTRIBUTE_MAP
+        .USER_YIELD_DELTA
+        .id;
+
+
+const ENERGY_ATTRIBUTE_IDS =
+    Object.freeze([
+        YIELD_TODAY_ID,
+        YIELD_YESTERDAY_ID,
+        USER_YIELD_ID,
+        USER_YIELD_DELTA_ID,
+    ]);
+
+
+/*
+|--------------------------------------------------------------------------
+| Helpers
+|--------------------------------------------------------------------------
+*/
+
+function finiteNumber(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
+        return null;
+    }
+
+
+    const numeric =
+        Number(
+            value
+        );
+
+
+    return Number.isFinite(
+        numeric
+    )
+        ? numeric
+        : null;
+}
+
+
+function validDate(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return null;
+    }
+
+
+    const date =
+        value instanceof Date
+            ? value
+            : new Date(
+                value
+            );
+
+
+    return Number.isFinite(
+        date.getTime()
+    )
+        ? date
+        : null;
+}
+
+
+function normalizeDeviceInstance(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined ||
+        String(
+            value
+        ).trim() === ""
+    ) {
+        return "UNKNOWN_DEVICE";
+    }
+
+
+    return String(
+        value
+    );
+}
+
+
+function normalizeUnit(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return null;
+    }
+
+
+    const unit =
+        String(
+            value
+        ).trim();
+
+
+    return unit === ""
+        ? null
+        : unit;
+}
+
+
+function extractExplicitUnit(
+    record
+) {
+    /*
+     * Explicit persisted metadata only.
+     *
+     * Do NOT infer from:
+     * - magnitude
+     * - parameter name
+     * - DBus path
+     * - formatWithUnit
+     */
+
+    return (
+    normalizeUnit(
+        record?.unit
+    ) ??
+    normalizeUnit(
+        record?.engineeringUnit
+    ) ??
+    null
+);
+}
+
+
+function normalizeConfig(
+    config
+) {
+    return {
+        ...DEFAULT_SOLAR_ENERGY_ANALYTICS_CONFIG,
+        ...(
+            config ??
+            {}
+        ),
+    };
+}
+
+
+function recordPassesBaseBoundary({
+    record,
+    start,
+    end,
+    config,
+}) {
+    const timestamp =
+        validDate(
+            record
+                ?.timestamp
+        );
+
+
+    if (
+        !timestamp
+    ) {
+        return false;
+    }
+
+
+    if (
+        timestamp < start ||
+        timestamp >= end
+    ) {
+        return false;
+    }
+
+
+    if (
+        config
+            .requireValidQuality &&
+        record
+            ?.quality !==
+            "VALID"
+    ) {
+        return false;
+    }
+
+
+    if (
+        config
+            .requireRawAggregation &&
+        record
+            ?.aggregationLevel !==
+            "RAW"
+    ) {
+        return false;
+    }
+
+
+    return true;
+}
+
+
+function recordsForAttribute(
+    records,
+    attributeId
+) {
+    return records.filter(
+        (
+            record
+        ) =>
+            Number(
+                record
+                    ?.vrmAttributeId
+            ) ===
+            Number(
+                attributeId
+            )
+    );
+}
+
+
+function distinctDeviceInstances(
+    records
+) {
+    return Array.from(
+        new Set(
+            records.map(
+                (
+                    record
+                ) =>
+                    normalizeDeviceInstance(
+                        record
+                            ?.deviceInstance
+                    )
+            )
+        )
+    ).sort();
+}
+
+
+function filterDevice(
+    records,
+    deviceInstance
+) {
+    const normalized =
+        normalizeDeviceInstance(
+            deviceInstance
+        );
+
+
+    return records.filter(
+        (
+            record
+        ) =>
+            normalizeDeviceInstance(
+                record
+                    ?.deviceInstance
+            ) ===
+            normalized
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Timestamp preparation
+|--------------------------------------------------------------------------
+|
+| Identical same-timestamp observations are deduplicated.
+|
+| Conflicting values at the same timestamp are discarded because there is
+| no defensible basis for selecting one as authoritative.
+|--------------------------------------------------------------------------
+*/
+
+function prepareSeries(
+    records
+) {
+    const byTimestamp =
+        new Map();
+
+
+    for (
+        const record
+        of records
+    ) {
+        const timestamp =
+            validDate(
+                record
+                    ?.timestamp
+            );
+
+
+        const numeric =
+            finiteNumber(
+                record
+                    ?.numericValue
+            ) ??
+            finiteNumber(
+                record
+                    ?.value
+            );
+
+
+        if (
+            !timestamp ||
+            numeric === null
+        ) {
+            continue;
+        }
+
+
+        const key =
+            timestamp.toISOString();
+
+
+        if (
+            !byTimestamp.has(
+                key
+            )
+        ) {
+            byTimestamp.set(
+                key,
+                []
+            );
+        }
+
+
+        byTimestamp
+            .get(
+                key
+            )
+            .push({
+                timestamp,
+                value:
+                    numeric,
+                record,
+            });
+    }
+
+
+    const series =
+        [];
+
+
+    let duplicateTimestampCount =
+        0;
+
+
+    let conflictingTimestampCount =
+        0;
+
+
+    for (
+        const observations
+        of byTimestamp.values()
+    ) {
+        const uniqueValues =
+            Array.from(
+                new Set(
+                    observations.map(
+                        (
+                            observation
+                        ) =>
+                            observation.value
+                    )
+                )
+            );
+
+
+        if (
+            uniqueValues.length >
+            1
+        ) {
+            conflictingTimestampCount +=
+                1;
+
+            continue;
+        }
+
+
+        if (
+            observations.length >
+            1
+        ) {
+            duplicateTimestampCount +=
+                observations.length -
+                1;
+        }
+
+
+        series.push({
+            timestamp:
+                observations[
+                    0
+                ].timestamp,
+
+            value:
+                observations[
+                    0
+                ].value,
+
+            record:
+                observations[
+                    0
+                ].record,
+        });
+    }
+
+
+    series.sort(
+        (
+            a,
+            b
+        ) =>
+            a.timestamp -
+            b.timestamp
+    );
+
+
+    return {
+        series,
+        duplicateTimestampCount,
+        conflictingTimestampCount,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Explicit unit qualification
+|--------------------------------------------------------------------------
+*/
+
+function qualifyUnit(
+    records
+) {
+    const units =
+        Array.from(
+            new Set(
+                records
+                    .map(
+                        extractExplicitUnit
+                    )
+                    .filter(
+                        (
+                            unit
+                        ) =>
+                            unit !== null
+                    )
+            )
+        );
+
+
+    if (
+        units.length ===
+        0
+    ) {
+        return {
+            status:
+                SOLAR_UNIT_STATUS
+                    .UNRESOLVED,
+
+            value:
+                null,
+
+            observedUnits:
+                [],
+        };
+    }
+
+
+    if (
+        units.length ===
+        1
+    ) {
+        return {
+            status:
+                SOLAR_UNIT_STATUS
+                    .RESOLVED,
+
+            value:
+                units[
+                    0
+                ],
+
+            observedUnits:
+                units,
+        };
+    }
+
+
+    return {
+        status:
+            "CONFLICT",
+
+        value:
+            null,
+
+        observedUnits:
+            units,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Generic series metrics
+|--------------------------------------------------------------------------
+*/
+
+function calculateSeriesMetrics(
+    series
+) {
+    if (
+        !Array.isArray(
+            series
+        ) ||
+        series.length ===
+            0
+    ) {
+        return {
+            sampleCount:
+                0,
+
+            minimum:
+                null,
+
+            maximum:
+                null,
+
+            latest:
+                null,
+
+            latestAt:
+                null,
+
+            first:
+                null,
+
+            firstAt:
+                null,
+
+            zeroCount:
+                0,
+
+            positiveCount:
+                0,
+
+            negativeCount:
+                0,
+        };
+    }
+
+
+    const values =
+        series.map(
+            (
+                point
+            ) =>
+                point.value
+        );
+
+
+    const firstPoint =
+        series[
+            0
+        ];
+
+
+    const latestPoint =
+        series[
+            series.length -
+            1
+        ];
+
+
+    return {
+        sampleCount:
+            values.length,
+
+        minimum:
+            Math.min(
+                ...values
+            ),
+
+        maximum:
+            Math.max(
+                ...values
+            ),
+
+        latest:
+            latestPoint.value,
+
+        latestAt:
+            latestPoint.timestamp,
+
+        first:
+            firstPoint.value,
+
+        firstAt:
+            firstPoint.timestamp,
+
+        zeroCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value ===
+                    0
+            ).length,
+
+        positiveCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value >
+                    0
+            ).length,
+
+        negativeCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value <
+                    0
+            ).length,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Counter diagnostics
+|--------------------------------------------------------------------------
+*/
+
+function calculateCounterDiagnostics(
+    series
+) {
+    let increaseCount =
+        0;
+
+
+    let unchangedCount =
+        0;
+
+
+    let decreaseCount =
+        0;
+
+
+    let positiveDeltaTotal =
+        0;
+
+
+    const decreases =
+        [];
+
+
+    for (
+        let index = 1;
+        index <
+        series.length;
+        index += 1
+    ) {
+        const previous =
+            series[
+                index -
+                1
+            ];
+
+
+        const current =
+            series[
+                index
+            ];
+
+
+        const delta =
+            current.value -
+            previous.value;
+
+
+        if (
+            delta >
+            0
+        ) {
+            increaseCount +=
+                1;
+
+            positiveDeltaTotal +=
+                delta;
+        }
+        else if (
+            delta ===
+            0
+        ) {
+            unchangedCount +=
+                1;
+        }
+        else {
+            decreaseCount +=
+                1;
+
+            decreases.push({
+                from:
+                    previous.value,
+
+                to:
+                    current.value,
+
+                previousAt:
+                    previous.timestamp,
+
+                currentAt:
+                    current.timestamp,
+
+                delta,
+            });
+        }
+    }
+
+
+    return {
+        increaseCount,
+        unchangedCount,
+        decreaseCount,
+
+        /*
+         * Diagnostic only.
+         *
+         * This is NOT labelled solar energy because counter semantics and
+         * engineering units must first be qualified.
+         */
+        positiveDeltaTotal,
+
+        decreases,
+
+        resetConfirmed:
+            false,
+
+        rolloverConfirmed:
+            false,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Daily-history diagnostics
+|--------------------------------------------------------------------------
+|
+| Daily-yield telemetry is a repeated state/history value.
+|
+| We therefore expose observations but never sum samples across time.
+|--------------------------------------------------------------------------
+*/
+
+function calculateDailyYieldDiagnostics(
+    series
+) {
+    if (
+        series.length ===
+        0
+    ) {
+        return {
+            latestObservedValue:
+                null,
+
+            latestObservedAt:
+                null,
+
+            distinctValueCount:
+                0,
+
+            changedWithinWindow:
+                false,
+
+            summed:
+                false,
+        };
+    }
+
+
+    const distinctValues =
+        Array.from(
+            new Set(
+                series.map(
+                    (
+                        point
+                    ) =>
+                        point.value
+                )
+            )
+        );
+
+
+    const latest =
+        series[
+            series.length -
+            1
+        ];
+
+
+    return {
+        latestObservedValue:
+            latest.value,
+
+        latestObservedAt:
+            latest.timestamp,
+
+        distinctValueCount:
+            distinctValues.length,
+
+        changedWithinWindow:
+            distinctValues.length >
+            1,
+
+        summed:
+            false,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Delta diagnostics
+|--------------------------------------------------------------------------
+*/
+
+function calculateDeltaDiagnostics(
+    series
+) {
+    const values =
+        series.map(
+            (
+                point
+            ) =>
+                point.value
+        );
+
+
+    return {
+        sampleCount:
+            values.length,
+
+        zeroCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value ===
+                    0
+            ).length,
+
+        positiveCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value >
+                    0
+            ).length,
+
+        negativeCount:
+            values.filter(
+                (
+                    value
+                ) =>
+                    value <
+                    0
+            ).length,
+
+        /*
+         * Deliberately not summed into energy while delta semantics and
+         * engineering units remain unresolved.
+         */
+        total:
+            null,
+
+        summed:
+            false,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Empty evidence result
+|--------------------------------------------------------------------------
+*/
+
+function emptyEvidenceBlock() {
+    return {
+        attributeId:
+            null,
+
+        path:
+            SOLAR_ENERGY_PATH
+                .NONE,
+
+        dataKind:
+            SOLAR_ENERGY_DATA_KIND
+                .NONE,
+
+        status:
+            SOLAR_ENERGY_ANALYTICS_STATUS
+                .UNAVAILABLE,
+
+        reason:
+            SOLAR_ENERGY_ANALYTICS_REASON
+                .NO_SOLAR_ENERGY_EVIDENCE,
+
+        topology: {
+            status:
+                SOLAR_ENERGY_TOPOLOGY_STATUS
+                    .UNAVAILABLE,
+
+            observedDeviceInstances:
+                [],
+
+            selectedDeviceInstance:
+                null,
+
+            ambiguous:
+                false,
+        },
+
+        unit: {
+            status:
+                SOLAR_UNIT_STATUS
+                    .UNRESOLVED,
+
+            value:
+                null,
+
+            observedUnits:
+                [],
+        },
+
+        metrics:
+            calculateSeriesMetrics(
+                []
+            ),
+
+        dailyHistory:
+            null,
+
+        counter:
+            null,
+
+        delta:
+            null,
+
+        evidence: {
+            candidateRecords:
+                0,
+
+            recordsUsed:
+                0,
+
+            duplicateTimestampCount:
+                0,
+
+            conflictingTimestampCount:
+                0,
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Evidence specification
+|--------------------------------------------------------------------------
+*/
+
+const ENERGY_EVIDENCE_SPECIFICATIONS =
+    Object.freeze([
+        Object.freeze({
+            attributeId:
+                YIELD_TODAY_ID,
+
+            path:
+                SOLAR_ENERGY_PATH
+                    .DAILY_YIELD_94,
+
+            dataKind:
+                SOLAR_ENERGY_DATA_KIND
+                    .DAILY_HISTORY,
+        }),
+
+        Object.freeze({
+            attributeId:
+                YIELD_YESTERDAY_ID,
+
+            path:
+                SOLAR_ENERGY_PATH
+                    .PREVIOUS_DAY_YIELD_96,
+
+            dataKind:
+                SOLAR_ENERGY_DATA_KIND
+                    .DAILY_HISTORY,
+        }),
+
+        Object.freeze({
+            attributeId:
+                USER_YIELD_ID,
+
+            path:
+                SOLAR_ENERGY_PATH
+                    .USER_YIELD_COUNTER_285,
+
+            dataKind:
+                SOLAR_ENERGY_DATA_KIND
+                    .COUNTER,
+        }),
+
+        Object.freeze({
+            attributeId:
+                USER_YIELD_DELTA_ID,
+
+            path:
+                SOLAR_ENERGY_PATH
+                    .USER_YIELD_DELTA_340,
+
+            dataKind:
+                SOLAR_ENERGY_DATA_KIND
+                    .DELTA,
+        }),
+    ]);
+
+
+/*
+|--------------------------------------------------------------------------
+| Per-evidence qualification
+|--------------------------------------------------------------------------
+*/
+
+function analyseEvidence({
+    records,
+    specification,
+    selectedDeviceInstance =
+        null,
+}) {
+    const candidateRecords =
+        recordsForAttribute(
+            records,
+            specification
+                .attributeId
+        );
+
+
+    if (
+        candidateRecords.length ===
+        0
+    ) {
+        return {
+            ...emptyEvidenceBlock(),
+
+            attributeId:
+                specification
+                    .attributeId,
+
+            path:
+                specification
+                    .path,
+
+            dataKind:
+                specification
+                    .dataKind,
+        };
+    }
+
+
+    const observedDeviceInstances =
+        distinctDeviceInstances(
+            candidateRecords
+        );
+
+
+    let selectedRecords =
+        candidateRecords;
+
+
+    let resolvedDeviceInstance =
+        null;
+
+
+    if (
+        selectedDeviceInstance !==
+        null &&
+        selectedDeviceInstance !==
+        undefined
+    ) {
+        selectedRecords =
+            filterDevice(
+                candidateRecords,
+                selectedDeviceInstance
+            );
+
+
+        resolvedDeviceInstance =
+            normalizeDeviceInstance(
+                selectedDeviceInstance
+            );
+
+
+        if (
+            selectedRecords.length ===
+            0
+        ) {
+            return {
+                ...emptyEvidenceBlock(),
+
+                attributeId:
+                    specification
+                        .attributeId,
+
+                path:
+                    specification
+                        .path,
+
+                dataKind:
+                    specification
+                        .dataKind,
+
+                reason:
+                    SOLAR_ENERGY_ANALYTICS_REASON
+                        .SELECTED_DEVICE_NOT_FOUND,
+
+                topology: {
+                    status:
+                        SOLAR_ENERGY_TOPOLOGY_STATUS
+                            .UNAVAILABLE,
+
+                    observedDeviceInstances,
+
+                    selectedDeviceInstance:
+                        resolvedDeviceInstance,
+
+                    ambiguous:
+                        false,
+                },
+
+                evidence: {
+                    candidateRecords:
+                        candidateRecords
+                            .length,
+
+                    recordsUsed:
+                        0,
+
+                    duplicateTimestampCount:
+                        0,
+
+                    conflictingTimestampCount:
+                        0,
+                },
+            };
+        }
+    }
+    else {
+        if (
+            observedDeviceInstances.length >
+            1
+        ) {
+            return {
+                ...emptyEvidenceBlock(),
+
+                attributeId:
+                    specification
+                        .attributeId,
+
+                path:
+                    specification
+                        .path,
+
+                dataKind:
+                    specification
+                        .dataKind,
+
+                reason:
+                    SOLAR_ENERGY_ANALYTICS_REASON
+                        .DEVICE_TOPOLOGY_AMBIGUOUS,
+
+                topology: {
+                    status:
+                        SOLAR_ENERGY_TOPOLOGY_STATUS
+                            .AMBIGUOUS,
+
+                    observedDeviceInstances,
+
+                    selectedDeviceInstance:
+                        null,
+
+                    ambiguous:
+                        true,
+                },
+
+                evidence: {
+                    candidateRecords:
+                        candidateRecords
+                            .length,
+
+                    recordsUsed:
+                        0,
+
+                    duplicateTimestampCount:
+                        0,
+
+                    conflictingTimestampCount:
+                        0,
+                },
+            };
+        }
+
+
+        resolvedDeviceInstance =
+            observedDeviceInstances[
+                0
+            ] ??
+            null;
+    }
+
+
+    const prepared =
+        prepareSeries(
+            selectedRecords
+        );
+
+
+    if (
+        prepared
+            .series
+            .length ===
+        0
+    ) {
+        return {
+            ...emptyEvidenceBlock(),
+
+            attributeId:
+                specification
+                    .attributeId,
+
+            path:
+                specification
+                    .path,
+
+            dataKind:
+                specification
+                    .dataKind,
+
+            reason:
+                SOLAR_ENERGY_ANALYTICS_REASON
+                    .NO_VALID_SOLAR_ENERGY_SAMPLES,
+
+            topology: {
+                status:
+                    SOLAR_ENERGY_TOPOLOGY_STATUS
+                        .QUALIFIED,
+
+                observedDeviceInstances,
+
+                selectedDeviceInstance:
+                    resolvedDeviceInstance,
+
+                ambiguous:
+                    false,
+            },
+
+            evidence: {
+                candidateRecords:
+                    selectedRecords
+                        .length,
+
+                recordsUsed:
+                    0,
+
+                duplicateTimestampCount:
+                    prepared
+                        .duplicateTimestampCount,
+
+                conflictingTimestampCount:
+                    prepared
+                        .conflictingTimestampCount,
+            },
+        };
+    }
+
+
+    const unit =
+        qualifyUnit(
+            selectedRecords
+        );
+
+
+    if (
+        unit.status ===
+        "CONFLICT"
+    ) {
+        return {
+            ...emptyEvidenceBlock(),
+
+            attributeId:
+                specification
+                    .attributeId,
+
+            path:
+                specification
+                    .path,
+
+            dataKind:
+                specification
+                    .dataKind,
+
+            reason:
+                SOLAR_ENERGY_ANALYTICS_REASON
+                    .UNIT_METADATA_CONFLICT,
+
+            topology: {
+                status:
+                    SOLAR_ENERGY_TOPOLOGY_STATUS
+                        .QUALIFIED,
+
+                observedDeviceInstances,
+
+                selectedDeviceInstance:
+                    resolvedDeviceInstance,
+
+                ambiguous:
+                    false,
+            },
+
+            unit,
+
+            metrics:
+                calculateSeriesMetrics(
+                    prepared
+                        .series
+                ),
+
+            evidence: {
+                candidateRecords:
+                    selectedRecords
+                        .length,
+
+                recordsUsed:
+                    prepared
+                        .series
+                        .length,
+
+                duplicateTimestampCount:
+                    prepared
+                        .duplicateTimestampCount,
+
+                conflictingTimestampCount:
+                    prepared
+                        .conflictingTimestampCount,
+            },
+        };
+    }
+
+
+    const unitResolved =
+        unit.status ===
+        SOLAR_UNIT_STATUS
+            .RESOLVED;
+
+
+    let reason =
+        unitResolved
+            ? SOLAR_ENERGY_ANALYTICS_REASON
+                .SOLAR_ENERGY_CALCULATED
+            : SOLAR_ENERGY_ANALYTICS_REASON
+                .SOLAR_YIELD_UNIT_UNRESOLVED;
+
+
+    let status =
+        unitResolved
+            ? SOLAR_ENERGY_ANALYTICS_STATUS
+                .CALCULATED
+            : SOLAR_ENERGY_ANALYTICS_STATUS
+                .PARTIALLY_CALCULATED;
+
+
+    let dailyHistory =
+        null;
+
+
+    let counter =
+        null;
+
+
+    let delta =
+        null;
+
+
+    if (
+        specification
+            .dataKind ===
+        SOLAR_ENERGY_DATA_KIND
+            .DAILY_HISTORY
+    ) {
+        dailyHistory =
+            calculateDailyYieldDiagnostics(
+                prepared
+                    .series
+            );
+    }
+
+
+    if (
+        specification
+            .dataKind ===
+        SOLAR_ENERGY_DATA_KIND
+            .COUNTER
+    ) {
+        counter =
+            calculateCounterDiagnostics(
+                prepared
+                    .series
+            );
+
+
+        /*
+         * A resolved engineering unit is not sufficient by itself to turn
+         * a conditional counter into reporting-window energy.
+         *
+         * We expose the counter diagnostics, but the actual counter-delta
+         * energy remains unresolved until counter semantics are explicitly
+         * qualified.
+         */
+        status =
+            SOLAR_ENERGY_ANALYTICS_STATUS
+                .PARTIALLY_CALCULATED;
+
+
+        reason =
+            counter
+                .decreaseCount >
+            0
+                ? SOLAR_ENERGY_ANALYTICS_REASON
+                    .COUNTER_DECREASE_OBSERVED
+                : SOLAR_ENERGY_ANALYTICS_REASON
+                    .COUNTER_SEMANTICS_UNRESOLVED;
+    }
+
+
+    if (
+        specification
+            .dataKind ===
+        SOLAR_ENERGY_DATA_KIND
+            .DELTA
+    ) {
+        delta =
+            calculateDeltaDiagnostics(
+                prepared
+                    .series
+            );
+
+
+        /*
+         * Even with an explicit unit, attr340 remains conditional until
+         * its accumulation semantics are established.
+         */
+        status =
+            SOLAR_ENERGY_ANALYTICS_STATUS
+                .PARTIALLY_CALCULATED;
+
+
+        reason =
+            SOLAR_ENERGY_ANALYTICS_REASON
+                .YIELD_DELTA_SEMANTICS_UNRESOLVED;
+    }
+
+
+    return {
+        attributeId:
+            specification
+                .attributeId,
+
+        path:
+            specification
+                .path,
+
+        dataKind:
+            specification
+                .dataKind,
+
+        status,
+
+        reason,
+
+        topology: {
+            status:
+                SOLAR_ENERGY_TOPOLOGY_STATUS
+                    .QUALIFIED,
+
+            observedDeviceInstances,
+
+            selectedDeviceInstance:
+                resolvedDeviceInstance,
+
+            ambiguous:
+                false,
+        },
+
+        unit,
+
+        metrics:
+            calculateSeriesMetrics(
+                prepared
+                    .series
+            ),
+
+        dailyHistory,
+
+        counter,
+
+        delta,
+
+        evidence: {
+            candidateRecords:
+                selectedRecords
+                    .length,
+
+            recordsUsed:
+                prepared
+                    .series
+                    .length,
+
+            duplicateTimestampCount:
+                prepared
+                    .duplicateTimestampCount,
+
+            conflictingTimestampCount:
+                prepared
+                    .conflictingTimestampCount,
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Overall status
+|--------------------------------------------------------------------------
+*/
+
+function deriveOverallStatus(
+    evidenceBlocks
+) {
+    const blocks =
+        Object.values(
+            evidenceBlocks
+        );
+
+
+    const calculated =
+        blocks.filter(
+            (
+                block
+            ) =>
+                block.status ===
+                SOLAR_ENERGY_ANALYTICS_STATUS
+                    .CALCULATED
+        );
+
+
+    const partial =
+        blocks.filter(
+            (
+                block
+            ) =>
+                block.status ===
+                SOLAR_ENERGY_ANALYTICS_STATUS
+                    .PARTIALLY_CALCULATED
+        );
+
+
+    if (
+        calculated.length >
+        0
+    ) {
+        return {
+            status:
+                SOLAR_ENERGY_ANALYTICS_STATUS
+                    .CALCULATED,
+
+            reason:
+                SOLAR_ENERGY_ANALYTICS_REASON
+                    .SOLAR_ENERGY_CALCULATED,
+        };
+    }
+
+
+    if (
+        partial.length >
+        0
+    ) {
+        return {
+            status:
+                SOLAR_ENERGY_ANALYTICS_STATUS
+                    .PARTIALLY_CALCULATED,
+
+            reason:
+                SOLAR_ENERGY_ANALYTICS_REASON
+                    .SOLAR_YIELD_UNIT_UNRESOLVED,
+        };
+    }
+
+
+    return {
+        status:
+            SOLAR_ENERGY_ANALYTICS_STATUS
+                .UNAVAILABLE,
+
+        reason:
+            SOLAR_ENERGY_ANALYTICS_REASON
+                .NO_SOLAR_ENERGY_EVIDENCE,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Main service
+|--------------------------------------------------------------------------
+*/
+
+export function calculateSolarEnergyAnalytics({
+    records = [],
+    start,
+    end,
+    selectedDeviceInstance = null,
+    config = {},
+} = {}) {
+    const reportingStart =
+        validDate(
+            start
+        );
+
+
+    const reportingEnd =
+        validDate(
+            end
+        );
+
+
+    if (
+        !reportingStart ||
+        !reportingEnd ||
+        reportingStart >=
+        reportingEnd
+    ) {
+        return {
+            family:
+                SOLAR_ENERGY_ANALYTICS_FAMILY,
+
+            phase:
+                SOLAR_ENERGY_ANALYTICS_PHASE,
+
+            status:
+                SOLAR_ENERGY_ANALYTICS_STATUS
+                    .UNAVAILABLE,
+
+            reason:
+                SOLAR_ENERGY_ANALYTICS_REASON
+                    .INVALID_REPORTING_WINDOW,
+
+            reportingWindow: {
+                start:
+                    reportingStart,
+
+                end:
+                    reportingEnd,
+
+                semantics:
+                    "[start,end)",
+            },
+
+            selectedDeviceInstance:
+                selectedDeviceInstance ===
+                    null ||
+                selectedDeviceInstance ===
+                    undefined
+                    ? null
+                    : normalizeDeviceInstance(
+                        selectedDeviceInstance
+                    ),
+
+            energy: {
+                value:
+                    null,
+
+                unit:
+                    null,
+
+                calculated:
+                    false,
+            },
+
+            evidence: {
+                totalInputRecords:
+                    Array.isArray(
+                        records
+                    )
+                        ? records.length
+                        : 0,
+
+                qualifiedInputRecords:
+                    0,
+
+                solarEnergyCandidateRecords:
+                    0,
+            },
+
+            sources: {
+                yieldToday:
+                    emptyEvidenceBlock(),
+
+                yieldYesterday:
+                    emptyEvidenceBlock(),
+
+                userYield:
+                    emptyEvidenceBlock(),
+
+                userYieldDelta:
+                    emptyEvidenceBlock(),
+            },
+
+            boundaries:
+                SOLAR_ENERGY_ANALYTICS_BOUNDARIES,
+        };
+    }
+
+
+    const resolvedConfig =
+        normalizeConfig(
+            config
+        );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Production-quality boundary
+    |--------------------------------------------------------------------------
+    */
+
+    const qualifiedRecords =
+        Array.isArray(
+            records
+        )
+            ? records.filter(
+                (
+                    record
+                ) =>
+                    recordPassesBaseBoundary({
+                        record,
+                        start:
+                            reportingStart,
+                        end:
+                            reportingEnd,
+                        config:
+                            resolvedConfig,
+                    })
+            )
+            : [];
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Solar-energy/yield candidates only
+    |--------------------------------------------------------------------------
+    */
+
+    const candidateRecords =
+        qualifiedRecords.filter(
+            (
+                record
+            ) =>
+                ENERGY_ATTRIBUTE_IDS.includes(
+                    Number(
+                        record
+                            ?.vrmAttributeId
+                    )
+                )
+        );
+
+
+    const yieldToday =
+        analyseEvidence({
+            records:
+                candidateRecords,
+
+            specification:
+                ENERGY_EVIDENCE_SPECIFICATIONS[
+                    0
+                ],
+
+            selectedDeviceInstance,
+        });
+
+
+    const yieldYesterday =
+        analyseEvidence({
+            records:
+                candidateRecords,
+
+            specification:
+                ENERGY_EVIDENCE_SPECIFICATIONS[
+                    1
+                ],
+
+            selectedDeviceInstance,
+        });
+
+
+    const userYield =
+        analyseEvidence({
+            records:
+                candidateRecords,
+
+            specification:
+                ENERGY_EVIDENCE_SPECIFICATIONS[
+                    2
+                ],
+
+            selectedDeviceInstance,
+        });
+
+
+    const userYieldDelta =
+        analyseEvidence({
+            records:
+                candidateRecords,
+
+            specification:
+                ENERGY_EVIDENCE_SPECIFICATIONS[
+                    3
+                ],
+
+            selectedDeviceInstance,
+        });
+
+
+    const sources = {
+        yieldToday,
+        yieldYesterday,
+        userYield,
+        userYieldDelta,
+    };
+
+
+    const overall =
+        deriveOverallStatus(
+            sources
+        );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Canonical reporting-window energy
+    |--------------------------------------------------------------------------
+    |
+    | Deliberately null in the current semantic contract.
+    |
+    | A daily-history observation is not automatically reporting-window
+    | interval energy. A cumulative counter is not usable until counter
+    | semantics are qualified. A delta stream is not summed until its
+    | accumulation semantics are qualified.
+    |
+    | This prevents "some yield number exists" from becoming fabricated
+    | kWh.
+    |--------------------------------------------------------------------------
+    */
+
+    return {
+        family:
+            SOLAR_ENERGY_ANALYTICS_FAMILY,
+
+        phase:
+            SOLAR_ENERGY_ANALYTICS_PHASE,
+
+        status:
+            overall
+                .status,
+
+        reason:
+            overall
+                .reason,
+
+        reportingWindow: {
+            start:
+                reportingStart,
+
+            end:
+                reportingEnd,
+
+            semantics:
+                "[start,end)",
+        },
+
+        selectedDeviceInstance:
+            selectedDeviceInstance ===
+                null ||
+            selectedDeviceInstance ===
+                undefined
+                ? null
+                : normalizeDeviceInstance(
+                    selectedDeviceInstance
+                ),
+
+        energy: {
+            value:
+                null,
+
+            unit:
+                null,
+
+            calculated:
+                false,
+
+            reason:
+                "REPORTING_WINDOW_ENERGY_NOT_YET_SEMANTICALLY_QUALIFIED",
+        },
+
+        evidence: {
+            totalInputRecords:
+                Array.isArray(
+                    records
+                )
+                    ? records.length
+                    : 0,
+
+            qualifiedInputRecords:
+                qualifiedRecords
+                    .length,
+
+            solarEnergyCandidateRecords:
+                candidateRecords
+                    .length,
+
+            attributeIds:
+                ENERGY_ATTRIBUTE_IDS,
+        },
+
+        sources,
+
+        boundaries:
+            SOLAR_ENERGY_ANALYTICS_BOUNDARIES,
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Default export
+|--------------------------------------------------------------------------
+*/
+
+export default Object.freeze({
+    SOLAR_ENERGY_ANALYTICS_PHASE,
+    SOLAR_ENERGY_ANALYTICS_FAMILY,
+    SOLAR_ENERGY_ANALYTICS_STATUS,
+    SOLAR_ENERGY_ANALYTICS_REASON,
+    SOLAR_ENERGY_PATH,
+    SOLAR_ENERGY_DATA_KIND,
+    SOLAR_ENERGY_TOPOLOGY_STATUS,
+    DEFAULT_SOLAR_ENERGY_ANALYTICS_CONFIG,
+    SOLAR_ENERGY_ANALYTICS_BOUNDARIES,
+    calculateSolarEnergyAnalytics,
+});

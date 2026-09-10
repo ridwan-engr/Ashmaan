@@ -174,7 +174,6 @@ const normalizeTelemetryRecord = ({
 
     aggregationLevel: "RAW",
 
-    raw: record,
   };
 };
 

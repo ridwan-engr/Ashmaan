@@ -25,9 +25,15 @@ const env = {
     "1d",
 
   // Frontend
-  corsOrigin:
+  // Frontend / CORS
+  corsOrigins: (
+    process.env.CORS_ORIGINS ||
     process.env.CORS_ORIGIN ||
-    "http://localhost:5173",
+    "http://localhost:5173"
+  )
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
 
   // Victron VRM
   vrm: {

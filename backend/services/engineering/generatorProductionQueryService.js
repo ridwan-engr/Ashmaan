@@ -1,0 +1,840 @@
+// services/engineering/generatorProductionQueryService.js
+
+import mongoose from "mongoose";
+
+import Telemetry from "../../models/Telemetry.js";
+
+import {
+    GENERATOR_PRODUCTION_QUERY_ATTRIBUTES,
+} from "./generatorProductionAdapterSupport.js";
+
+import {
+    calculateGeneratorProductionAnalytics,
+} from "./generatorProductionAdapter.js";
+
+
+/*
+|--------------------------------------------------------------------------
+| Phase 8.5I-D
+| MongoDB Generator Production Query Adapter
+|--------------------------------------------------------------------------
+|
+| Responsibilities:
+|
+| - query actual MongoDB Telemetry records for one installation
+| - restrict retrieval to generator + served-load attributes required by
+|   Phase 8.5
+| - retrieve VALID RAW telemetry only
+| - retain explicit telemetry unit/device metadata
+| - retrieve exact-end boundary evidence when present
+| - invoke generatorProductionAdapter.js
+|
+| This service DOES NOT:
+|
+| - infer power units
+| - combine generator devices
+| - invent fuel evidence
+| - invent generator demand evidence
+| - invent failure intervals
+| - reinterpret monitoring OFFLINE as generator failure
+|--------------------------------------------------------------------------
+*/
+
+
+export const GENERATOR_PRODUCTION_QUERY_STATUS =
+    Object.freeze({
+
+        CALCULATED:
+            "CALCULATED",
+
+        PARTIALLY_CALCULATED:
+            "PARTIALLY_CALCULATED",
+
+        UNAVAILABLE:
+            "UNAVAILABLE",
+    });
+
+
+export const GENERATOR_PRODUCTION_QUERY_REASON =
+    Object.freeze({
+
+        QUERY_COMPLETED:
+            "QUERY_COMPLETED",
+
+        NO_TELEMETRY_FOUND:
+            "NO_TELEMETRY_FOUND",
+
+        INVALID_INSTALLATION_ID:
+            "INVALID_INSTALLATION_ID",
+
+        INVALID_REPORTING_WINDOW:
+            "INVALID_REPORTING_WINDOW",
+
+        RECORD_LIMIT_REACHED:
+            "RECORD_LIMIT_REACHED",
+    });
+
+
+export const DEFAULT_GENERATOR_PRODUCTION_QUERY_CONFIG =
+    Object.freeze({
+
+        maxRecords:
+            200000,
+
+        includeEndBoundary:
+            true,
+    });
+
+
+/*
+|--------------------------------------------------------------------------
+| Helpers
+|--------------------------------------------------------------------------
+*/
+
+function asDate(
+    value
+) {
+
+    if (
+        value === null ||
+        value === undefined
+    ) {
+
+        return null;
+    }
+
+
+    const date =
+        value instanceof Date
+            ? value
+            : new Date(
+                value
+            );
+
+
+    return Number.isNaN(
+        date.getTime()
+    )
+        ? null
+        : date;
+}
+
+
+function validateWindow(
+    start,
+    end
+) {
+
+    const reportingStart =
+        asDate(
+            start
+        );
+
+
+    const reportingEnd =
+        asDate(
+            end
+        );
+
+
+    if (
+        !reportingStart ||
+        !reportingEnd ||
+        reportingStart >=
+            reportingEnd
+    ) {
+
+        throw new Error(
+            "A valid [start,end) generator production query window is required."
+        );
+    }
+
+
+    return {
+
+        start:
+            reportingStart,
+
+        end:
+            reportingEnd,
+    };
+}
+
+
+function normalizeInstallationId(
+    installationId
+) {
+
+    if (
+        installationId instanceof
+        mongoose.Types.ObjectId
+    ) {
+
+        return installationId;
+    }
+
+
+    if (
+        !mongoose.Types.ObjectId.isValid(
+            installationId
+        )
+    ) {
+
+        return null;
+    }
+
+
+    return new mongoose.Types.ObjectId(
+        installationId
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Build MongoDB telemetry query
+|--------------------------------------------------------------------------
+|
+| Retrieval is intentionally:
+|
+|     [start,end]
+|
+| when includeEndBoundary=true.
+|
+| The analytics engines themselves continue to enforce [start,end).
+|
+| Why include exact end?
+|
+| Because an exact-end power sample can legitimately establish the right
+| endpoint of a trapezoidal interval whose ENERGY belongs inside the
+| reporting window.
+|
+| Runtime and standalone energy semantics are NOT modified by this query.
+|--------------------------------------------------------------------------
+*/
+
+export function buildGeneratorProductionTelemetryQuery({
+    installationId,
+
+    start,
+
+    end,
+
+    includeEndBoundary = true,
+} = {}) {
+
+    const normalizedInstallationId =
+        normalizeInstallationId(
+            installationId
+        );
+
+
+    if (
+        !normalizedInstallationId
+    ) {
+
+        return {
+
+            status:
+                "INVALID",
+
+            reason:
+                GENERATOR_PRODUCTION_QUERY_REASON
+                    .INVALID_INSTALLATION_ID,
+
+            query:
+                null,
+        };
+    }
+
+
+    const reportingWindow =
+        validateWindow(
+            start,
+            end
+        );
+
+
+    const timestampFilter =
+        includeEndBoundary
+            ? {
+                $gte:
+                    reportingWindow
+                        .start,
+
+                $lte:
+                    reportingWindow
+                        .end,
+            }
+            : {
+                $gte:
+                    reportingWindow
+                        .start,
+
+                $lt:
+                    reportingWindow
+                        .end,
+            };
+
+
+    return {
+
+        status:
+            "VALID",
+
+        reason:
+            null,
+
+        query: {
+
+            installation:
+                normalizedInstallationId,
+
+            vrmAttributeId: {
+
+                $in:
+                    GENERATOR_PRODUCTION_QUERY_ATTRIBUTES,
+            },
+
+            timestamp:
+                timestampFilter,
+
+            quality:
+                "VALID",
+
+            aggregationLevel:
+                "RAW",
+        },
+
+        reportingWindow: {
+
+            start:
+                reportingWindow.start,
+
+            end:
+                reportingWindow.end,
+
+            analyticsSemantics:
+                "[start,end)",
+
+            retrievalSemantics:
+                includeEndBoundary
+                    ? "[start,end]"
+                    : "[start,end)",
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Execute Telemetry query
+|--------------------------------------------------------------------------
+|
+| telemetryModel is injectable for validation/testing.
+|
+| Production default:
+|
+|     Telemetry
+|--------------------------------------------------------------------------
+*/
+
+export async function fetchGeneratorProductionTelemetry({
+    installationId,
+
+    start,
+
+    end,
+
+    config = {},
+
+    telemetryModel = Telemetry,
+} = {}) {
+
+    const effectiveConfig = {
+
+        ...DEFAULT_GENERATOR_PRODUCTION_QUERY_CONFIG,
+
+        ...config,
+    };
+
+
+    const queryDefinition =
+        buildGeneratorProductionTelemetryQuery({
+
+            installationId,
+
+            start,
+
+            end,
+
+            includeEndBoundary:
+                effectiveConfig
+                    .includeEndBoundary,
+        });
+
+
+    if (
+        queryDefinition.status !==
+        "VALID"
+    ) {
+
+        return {
+
+            status:
+                GENERATOR_PRODUCTION_QUERY_STATUS
+                    .UNAVAILABLE,
+
+            reason:
+                queryDefinition.reason,
+
+            records:
+                [],
+
+            query:
+                null,
+
+            evidence: {
+
+                recordCount:
+                    0,
+            },
+        };
+    }
+
+
+    const maxRecords =
+        Number(
+            effectiveConfig
+                .maxRecords
+        );
+
+
+    if (
+        !Number.isInteger(
+            maxRecords
+        ) ||
+        maxRecords <=
+            0
+    ) {
+
+        throw new Error(
+            "Generator production query maxRecords must be a positive integer."
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Keep the full normalized engineering evidence fields.
+    |--------------------------------------------------------------------------
+    |
+    | Unit qualification consumes explicit normalized telemetry metadata.
+    |--------------------------------------------------------------------------
+    */
+
+    const records =
+        await telemetryModel
+            .find(
+                queryDefinition.query
+            )
+            .select({
+
+                installation:
+                    1,
+
+                site:
+                    1,
+
+                device:
+                    1,
+
+                timestamp:
+                    1,
+
+                parameter:
+                    1,
+
+                code:
+                    1,
+
+                description:
+                    1,
+
+                value:
+                    1,
+
+                numericValue:
+                    1,
+
+                unit:
+                    1,
+
+                quality:
+                    1,
+
+                source:
+                    1,
+
+                aggregationLevel:
+                    1,
+
+                vrmAttributeId:
+                    1,
+
+                deviceType:
+                    1,
+
+                deviceInstance:
+                    1,
+
+                dbusServiceType:
+                    1,
+
+                dbusPath:
+                    1,
+
+                formatWithUnit:
+                    1,
+
+            })
+            .sort({
+
+                timestamp:
+                    1,
+            })
+            .limit(
+                maxRecords
+            )
+            .lean();
+
+
+    const recordLimitReached =
+        records.length >=
+        maxRecords;
+
+
+    return {
+
+        status:
+            records.length >
+            0
+                ? GENERATOR_PRODUCTION_QUERY_STATUS
+                    .CALCULATED
+                : GENERATOR_PRODUCTION_QUERY_STATUS
+                    .UNAVAILABLE,
+
+        reason:
+            records.length ===
+            0
+                ? GENERATOR_PRODUCTION_QUERY_REASON
+                    .NO_TELEMETRY_FOUND
+                : recordLimitReached
+                    ? GENERATOR_PRODUCTION_QUERY_REASON
+                        .RECORD_LIMIT_REACHED
+                    : GENERATOR_PRODUCTION_QUERY_REASON
+                        .QUERY_COMPLETED,
+
+        records,
+
+        query:
+            queryDefinition.query,
+
+        reportingWindow:
+            queryDefinition.reportingWindow,
+
+        evidence: {
+
+            recordCount:
+                records.length,
+
+            maxRecords,
+
+            recordLimitReached,
+
+            relevantAttributeCount:
+                GENERATOR_PRODUCTION_QUERY_ATTRIBUTES
+                    .length,
+
+            relevantAttributes:
+                [
+                    ...GENERATOR_PRODUCTION_QUERY_ATTRIBUTES,
+                ],
+
+            qualityFilter:
+                "VALID",
+
+            aggregationLevelFilter:
+                "RAW",
+
+            exactEndBoundaryRequested:
+                effectiveConfig
+                    .includeEndBoundary ===
+                true,
+        },
+
+        boundaries: {
+
+            retrievalMayIncludeExactEnd:
+                effectiveConfig
+                    .includeEndBoundary ===
+                true,
+
+            analyticsStillUseStartInclusiveEndExclusive:
+                true,
+
+            exactEndAutomaticallyCountsAsRuntime:
+                false,
+
+            exactEndAutomaticallyCountsAsStandaloneEnergySample:
+                false,
+
+            missingTelemetryMeansZero:
+                false,
+        },
+    };
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Main MongoDB-backed generator analytics service
+|--------------------------------------------------------------------------
+*/
+
+export async function calculateGeneratorProductionAnalyticsFromMongo({
+    installationId,
+
+    start,
+
+    end,
+
+    deviceSelection = {},
+
+    servedLoadFamily = "PRIMARY",
+
+    queryConfig = {},
+
+    analyticsConfig = {},
+
+    fuelEvidence = {},
+
+    availabilityEvidence = {},
+
+    telemetryModel = Telemetry,
+} = {}) {
+
+    const reportingWindow =
+        validateWindow(
+            start,
+            end
+        );
+
+
+    const queryResult =
+        await fetchGeneratorProductionTelemetry({
+
+            installationId,
+
+            start:
+                reportingWindow.start,
+
+            end:
+                reportingWindow.end,
+
+            config:
+                queryConfig,
+
+            telemetryModel,
+        });
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Even with no telemetry, invoke the production adapter.
+    |--------------------------------------------------------------------------
+    |
+    | This ensures the output remains a normal generator analytics contract
+    | where unavailable metrics are NULL/UNAVAILABLE rather than a special
+    | database-only response.
+    |--------------------------------------------------------------------------
+    */
+
+    const analytics =
+        calculateGeneratorProductionAnalytics({
+
+            records:
+                queryResult.records,
+
+            start:
+                reportingWindow.start,
+
+            end:
+                reportingWindow.end,
+
+            deviceSelection,
+
+            servedLoadFamily,
+
+            config:
+                analyticsConfig,
+
+            fuelEvidence,
+
+            availabilityEvidence,
+        });
+
+
+    let status;
+
+
+    if (
+        queryResult.reason ===
+        GENERATOR_PRODUCTION_QUERY_REASON
+            .RECORD_LIMIT_REACHED
+    ) {
+
+        /*
+         * A truncated production dataset cannot be represented as fully
+         * qualified even if the downstream subset happens to calculate.
+         */
+
+        status =
+            GENERATOR_PRODUCTION_QUERY_STATUS
+                .PARTIALLY_CALCULATED;
+    }
+
+
+    else {
+
+        status =
+            analytics.status;
+    }
+
+
+    return {
+
+        family:
+            "GENERATOR_PRODUCTION_MONGODB_ANALYTICS",
+
+        status,
+
+        reportingWindow: {
+
+            start:
+                reportingWindow.start,
+
+            end:
+                reportingWindow.end,
+
+            semantics:
+                "[start,end)",
+        },
+
+        installationId:
+            String(
+                installationId
+            ),
+
+        query: {
+
+            status:
+                queryResult.status,
+
+            reason:
+                queryResult.reason,
+
+            reportingWindow:
+                queryResult
+                    .reportingWindow ??
+                null,
+
+            evidence:
+                queryResult.evidence,
+
+            boundaries:
+                queryResult
+                    .boundaries ??
+                null,
+        },
+
+        analytics,
+
+        evidence: {
+
+            mongoTelemetryQueried:
+                true,
+
+            retrievedRecordCount:
+                queryResult
+                    .records
+                    .length,
+
+            recordLimitReached:
+                queryResult
+                    .evidence
+                    .recordLimitReached ??
+                false,
+
+            exactEndBoundaryRetrievedWhenAvailable:
+                queryResult
+                    .evidence
+                    .exactEndBoundaryRequested ??
+                false,
+
+            productionFuelEvidenceAssumed:
+                false,
+
+            productionGeneratorDemandAssumed:
+                false,
+
+            productionFailureEvidenceAssumed:
+                false,
+        },
+
+        boundaries: {
+
+            mongodbRetrievalEqualsMetricSemantics:
+                false,
+
+            analyticsWindow:
+                "[start,end)",
+
+            exactEndMayBeRetrievedForBoundaryEvidence:
+                true,
+
+            exactEndAutomaticallyIncludedInRuntime:
+                false,
+
+            exactEndAutomaticallyIncludedInStandaloneEnergy:
+                false,
+
+            missingTelemetryMeansZero:
+                false,
+
+            runtimeUsedAsAvailability:
+                false,
+
+            runtimeConvertedToFuel:
+                false,
+        },
+    };
+}
+
+
+export default {
+
+    GENERATOR_PRODUCTION_QUERY_STATUS,
+
+    GENERATOR_PRODUCTION_QUERY_REASON,
+
+    DEFAULT_GENERATOR_PRODUCTION_QUERY_CONFIG,
+
+    buildGeneratorProductionTelemetryQuery,
+
+    fetchGeneratorProductionTelemetry,
+
+    calculateGeneratorProductionAnalyticsFromMongo,
+};
+

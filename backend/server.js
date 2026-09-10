@@ -23,13 +23,33 @@ import {
   stopVrmScheduler,
 } from "./services/scheduler/vrmScheduler.js";
 
+import optimizationDssRoutes from "./routes/optimizationDssRoutes.js";
+
 const app = express();
 
 app.use(helmet());
 
 app.use(
   cors({
-    origin: env.corsOrigin,
+    origin(origin, callback) {
+      // Allow non-browser/server-to-server requests with no Origin header.
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      if (
+        env.corsOrigins.includes(origin)
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error(
+          `CORS origin not allowed: ${origin}`
+        )
+      );
+    },
+
     credentials: true,
   })
 );
@@ -64,6 +84,8 @@ app.use(
     "/api/v1/reliability",
     reliabilityRoutes
 );
+
+app.use("/api/optimization-dss", optimizationDssRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
