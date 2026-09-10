@@ -13,7 +13,7 @@ import siteDashboardRoutes
   from "./routes/siteDashboardRoutes.js";
 
 import reliabilityRoutes
-from "./routes/reliabilityRoutes.js";
+  from "./routes/reliabilityRoutes.js";
 
 import notFound from "./middleware/notFound.js";
 import errorHandler from "./middleware/errorHandler.js";
@@ -27,7 +27,19 @@ import optimizationDssRoutes from "./routes/optimizationDssRoutes.js";
 
 const app = express();
 
-app.use(helmet());
+app.use(
+  helmet({
+    frameguard: {
+      action: "deny",
+    },
+
+    contentSecurityPolicy: {
+      directives: {
+        "frame-ancestors": ["'none'"],
+      },
+    },
+  })
+);
 
 app.use(
   cors({
@@ -81,8 +93,8 @@ app.use(
 );
 
 app.use(
-    "/api/v1/reliability",
-    reliabilityRoutes
+  "/api/v1/reliability",
+  reliabilityRoutes
 );
 
 app.use("/api/optimization-dss", optimizationDssRoutes);
