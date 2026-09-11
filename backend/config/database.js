@@ -10,7 +10,12 @@ const connectDatabase = async () => {
       throw new Error("MONGODB_URI is not configured.");
     }
 
-    const connection = await mongoose.connect(env.mongodbUri);
+    const connection = await mongoose.connect(
+      env.mongodbUri,
+      {
+        autoIndex: env.nodeEnv !== "production",
+      }
+    );
 
     console.log(
       `MongoDB connected: ${connection.connection.host}`

@@ -11,32 +11,32 @@ const telemetrySchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "Installation",
             required: true,
-            index: true,
+
         },
 
         device: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Device",
-            index: true,
+
         },
 
         timestamp: {
             type: Date,
             required: true,
-            index: true,
+
         },
 
         parameter: {
             type: String,
             required: true,
             trim: true,
-            index: true,
+
         },
 
         code: {
             type: String,
             trim: true,
-            index: true,
+
         },
 
         description: {
@@ -51,7 +51,7 @@ const telemetrySchema = new mongoose.Schema(
 
         numericValue: {
             type: Number,
-            index: true,
+
         },
 
         unit: {
@@ -97,17 +97,17 @@ const telemetrySchema = new mongoose.Schema(
 
         vrmAttributeId: {
             type: Number,
-            index: true,
+
         },
 
         deviceType: {
             type: String,
-            index: true,
+
         },
 
         deviceInstance: {
             type: String,
-            index: true,
+
         },
 
         dbusServiceType: {
@@ -137,26 +137,25 @@ telemetrySchema.index({
 
 telemetrySchema.index({
     installation: 1,
-    parameter: 1,
-    timestamp: -1,
+    vrmAttributeId: 1,
+    timestamp: 1,
 });
 
 telemetrySchema.index({
-    device: 1,
-    parameter: 1,
     timestamp: -1,
 });
+
 telemetrySchema.index(
-  {
-    installation: 1,
-    deviceType: 1,
-    deviceInstance: 1,
-    vrmAttributeId: 1,
-    timestamp: 1,
-  },
-  {
-    unique: true,
-  }
+    {
+        installation: 1,
+        deviceType: 1,
+        deviceInstance: 1,
+        vrmAttributeId: 1,
+        timestamp: 1,
+    },
+    {
+        unique: true,
+    }
 );
 
 const Telemetry = mongoose.model(
