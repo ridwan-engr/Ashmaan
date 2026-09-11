@@ -4,24 +4,63 @@ import {
   synchronizeVrm,
   synchronizeInstallationDevices,
   synchronizeInstallationTelemetry,
-    syncInstallationAlarmRules,
-    syncInstallationStatistics,
+  syncInstallationAlarmRules,
+  syncInstallationStatistics,
 } from "../controllers/syncController.js";
 
-import asyncHandler from "../utils/asyncHandler.js";
+import asyncHandler
+  from "../utils/asyncHandler.js";
 
-const router = express.Router();
+import authenticateJwt
+  from "../middleware/authenticateJwt.js";
+
+import requirePrivilegedRole
+  from "../middleware/requirePrivilegedRole.js";
+
+
+const router =
+  express.Router();
+
+
+/*
+|--------------------------------------------------------------------------
+| Production security boundary
+|--------------------------------------------------------------------------
+|
+| Every synchronization endpoint can cause persistent data mutation.
+|
+| Therefore:
+| - authentication is mandatory
+| - anonymous access is denied
+| - explicit privileged authorization is mandatory
+|
+|--------------------------------------------------------------------------
+*/
+
+router.use(
+  authenticateJwt
+);
+
+router.use(
+  requirePrivilegedRole
+);
 
 
 router.post(
   "/vrm",
-  asyncHandler(synchronizeVrm)
+  asyncHandler(
+    synchronizeVrm
+  )
 );
+
 
 router.post(
   "/vrm/installations/:id/devices",
-  asyncHandler(synchronizeInstallationDevices)
+  asyncHandler(
+    synchronizeInstallationDevices
+  )
 );
+
 
 router.post(
   "/vrm/installations/:id/telemetry",
@@ -30,14 +69,21 @@ router.post(
   )
 );
 
+
 router.post(
   "/vrm/installations/:id/alarms",
-  asyncHandler(syncInstallationAlarmRules)
+  asyncHandler(
+    syncInstallationAlarmRules
+  )
 );
+
 
 router.post(
   "/vrm/installations/:id/statistics",
-  asyncHandler(syncInstallationStatistics)
+  asyncHandler(
+    syncInstallationStatistics
+  )
 );
+
 
 export default router;
