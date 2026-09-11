@@ -7,6 +7,8 @@
 // - It does not log in, modify data, alter dependencies, or change config.
 
 import assert from "node:assert/strict";
+import http from "node:http";
+import https from "node:https";
 
 const PHASE = "13.15";
 const LAYER = "LIVE_SECURITY_RUNTIME_VALIDATION";
@@ -134,6 +136,103 @@ async function safeFetch(
   }
 }
 
+async function safeRawHttpRequest(
+  url,
+  options = {}
+) {
+  return new Promise((resolve) => {
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(url);
+    } catch (error) {
+      resolve({
+        reachable: false,
+        status: null,
+        headers: {},
+        body: "",
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      });
+
+      return;
+    }
+
+    const transport =
+      parsedUrl.protocol === "https:"
+        ? https
+        : http;
+
+    const request = transport.request(
+      parsedUrl,
+      {
+        method:
+          options.method ?? "GET",
+
+        headers:
+          options.headers ?? {},
+      },
+      (response) => {
+        let body = "";
+
+        response.setEncoding("utf8");
+
+        response.on(
+          "data",
+          (chunk) => {
+            body += chunk;
+          }
+        );
+
+        response.on(
+          "end",
+          () => {
+            resolve({
+              reachable: true,
+              status:
+                response.statusCode ?? null,
+              headers:
+                response.headers ?? {},
+              body,
+              error: null,
+            });
+          }
+        );
+      }
+    );
+
+    request.setTimeout(
+      10_000,
+      () => {
+        request.destroy(
+          new Error(
+            "Raw HTTP request timed out"
+          )
+        );
+      }
+    );
+
+    request.on(
+      "error",
+      (error) => {
+        resolve({
+          reachable: false,
+          status: null,
+          headers: {},
+          body: "",
+          error:
+            error instanceof Error
+              ? error.message
+              : String(error),
+        });
+      }
+    );
+
+    request.end();
+  });
+}
 function header(
   result,
   name
@@ -763,7 +862,7 @@ try {
   );
 
   const traceResult =
-    await safeFetch(
+    await safeRawHttpRequest(
       `${BASE_URL}${API_BASE}`,
       {
         method: "TRACE",

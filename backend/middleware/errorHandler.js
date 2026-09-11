@@ -10,10 +10,6 @@ const errorHandler = (err, req, res, next) => {
     response.errors = err.errors;
   }
 
-  if (process.env.NODE_ENV === "development") {
-    response.stack = err.stack;
-  }
-
   res.status(statusCode).json(response);
 };
 
