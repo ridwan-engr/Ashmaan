@@ -161,9 +161,23 @@ app.use(
 |--------------------------------------------------------------------------
 */
 
+morgan.token(
+  "safe-url",
+  (req) => {
+    const rawUrl =
+      typeof req.originalUrl === "string"
+        ? req.originalUrl
+        : typeof req.url === "string"
+          ? req.url
+          : "/";
+
+    return rawUrl.split("?")[0];
+  }
+);
+
 app.use(
   morgan(
-    "dev"
+    ":method :safe-url :status :response-time ms - :res[content-length]"
   )
 );
 
