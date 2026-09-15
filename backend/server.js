@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import mongoose from "mongoose";
+import http from "node:http";
 
 import env from "./config/env.js";
 import connectDatabase from "./config/database.js";
@@ -26,6 +27,11 @@ import {
 
 import optimizationDssRoutes
   from "./routes/optimizationDssRoutes.js";
+
+import {
+  initializeSocketServer,
+  closeSocketServer,
+} from "./realtime/socketServer.js";
 
 
 /*
@@ -165,15 +171,18 @@ morgan.token(
   "safe-url",
   (req) => {
     const rawUrl =
-      typeof req.originalUrl === "string"
+      typeof req.originalUrl ===
+        "string"
         ? req.originalUrl
-        : typeof req.url === "string"
+        : typeof req.url ===
+            "string"
           ? req.url
           : "/";
 
     return rawUrl.split("?")[0];
   }
 );
+
 
 app.use(
   morgan(
@@ -313,47 +322,73 @@ const startServer =
     */
 
     const server =
-      app.listen(
-        env.port,
-        () => {
-          console.log(
-            "----------------------------------------"
-          );
-
-          console.log(
-            "ASHMAAN Backend"
-          );
-
-          console.log(
-            "----------------------------------------"
-          );
-
-          console.log(
-            `Environment: ${env.nodeEnv}`
-          );
-
-          console.log(
-            `Port: ${env.port}`
-          );
-
-          console.log(
-            `API: http://localhost:${env.port}/api/v1`
-          );
-
-          console.log(
-            "----------------------------------------"
-          );
-
-
-          /*
-          |--------------------------------------------------------------------------
-          | Scheduler starts only after HTTP server startup
-          |--------------------------------------------------------------------------
-          */
-
-          startVrmScheduler();
-        }
+      http.createServer(
+        app
       );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Socket.IO live transport
+    |--------------------------------------------------------------------------
+    |
+    | Socket.IO attaches to the same HTTP server used by Express.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    initializeSocketServer(
+      server
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP listener
+    |--------------------------------------------------------------------------
+    */
+
+    server.listen(
+      env.port,
+      () => {
+        console.log(
+          "----------------------------------------"
+        );
+
+        console.log(
+          "ASHMAAN Backend"
+        );
+
+        console.log(
+          "----------------------------------------"
+        );
+
+        console.log(
+          `Environment: ${env.nodeEnv}`
+        );
+
+        console.log(
+          `Port: ${env.port}`
+        );
+
+        console.log(
+          `API: http://localhost:${env.port}/api/v1`
+        );
+
+        console.log(
+          "----------------------------------------"
+        );
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Scheduler starts only after HTTP server startup
+        |--------------------------------------------------------------------------
+        */
+
+        startVrmScheduler();
+      }
+    );
 
 
     /*
@@ -475,7 +510,21 @@ const startServer =
         try {
           /*
           |--------------------------------------------------------------------------
-          | 3. Stop accepting new HTTP connections
+          | 3. Close Socket.IO live transport
+          |--------------------------------------------------------------------------
+          |
+          | Disconnect live clients and stop the realtime transport before the
+          | underlying HTTP server is closed.
+          |
+          |--------------------------------------------------------------------------
+          */
+
+          await closeSocketServer();
+
+
+          /*
+          |--------------------------------------------------------------------------
+          | 4. Stop accepting new HTTP connections
           |--------------------------------------------------------------------------
           |
           | server.close():
@@ -490,6 +539,28 @@ const startServer =
               resolveClose,
               rejectClose
             ) => {
+              /*
+              |--------------------------------------------------------------------------
+              | The HTTP server may already have been closed by Socket.IO.
+              |--------------------------------------------------------------------------
+              |
+              | If closeSocketServer() closes the underlying HTTP listener,
+              | calling server.close() again may report ERR_SERVER_NOT_RUNNING.
+              |
+              | server.listening therefore protects the HTTP close operation.
+              |
+              |--------------------------------------------------------------------------
+              */
+
+              if (
+                !server.listening
+              ) {
+                resolveClose();
+
+                return;
+              }
+
+
               server.close(
                 (
                   error
@@ -534,7 +605,7 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
-          | 4. Close MongoDB / Mongoose
+          | 5. Close MongoDB / Mongoose
           |--------------------------------------------------------------------------
           |
           | connectDatabase() uses mongoose.connect(), therefore this closes the
@@ -552,6 +623,7 @@ const startServer =
           ) {
             await mongoose.disconnect();
 
+
             console.log(
               "MongoDB connection closed."
             );
@@ -568,7 +640,7 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
-          | 5. Successful graceful shutdown
+          | 6. Successful graceful shutdown
           |--------------------------------------------------------------------------
           */
 
@@ -607,6 +679,29 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
+          | Best-effort Socket.IO cleanup
+          |--------------------------------------------------------------------------
+          */
+
+          try {
+            await closeSocketServer();
+          } catch (
+            socketError
+          ) {
+            console.error(
+              `[Shutdown] Socket.IO cleanup failed: ${
+                socketError instanceof Error
+                  ? socketError.message
+                  : String(
+                      socketError
+                    )
+              }`
+            );
+          }
+
+
+          /*
+          |--------------------------------------------------------------------------
           | Best-effort database cleanup
           |--------------------------------------------------------------------------
           */
@@ -619,6 +714,7 @@ const startServer =
               0
             ) {
               await mongoose.disconnect();
+
 
               console.log(
                 "MongoDB connection closed after shutdown error."

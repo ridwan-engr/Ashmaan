@@ -238,11 +238,11 @@ const getSiteEnergyHistory = async ({
 
   const startTime = new Date(
     endTime.getTime() -
-      safeDays *
-        24 *
-        60 *
-        60 *
-        1000
+    safeDays *
+    24 *
+    60 *
+    60 *
+    1000
   );
 
   const records =
@@ -288,9 +288,10 @@ const getSiteEnergyHistory = async ({
   };
 };
 
-export {
+export default {
   getDashboardSites,
   getSiteOverview,
   getSiteTelemetry,
   getSiteEnergyHistory,
+  
 };

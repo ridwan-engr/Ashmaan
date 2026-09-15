@@ -56,6 +56,14 @@ const env = {
       Number(
         process.env.VRM_SYNC_BATCH_SIZE
       ) || 0,
+
+    mqttUsername:
+      process.env.VRM_MQTT_USERNAME,
+
+    mqttPort:
+      Number(
+        process.env.VRM_MQTT_PORT
+      ) || 8883,
   },
 };
 

@@ -1,9 +1,16 @@
+import siteDashboardService
+  from "../services/dashboard/siteDashboardService.js";
+
 import {
+  getSiteTelemetrySnapshot,
+} from "../services/dashboard/siteTelemetrySnapshotService.js";
+
+const {
   getDashboardSites,
   getSiteOverview,
   getSiteTelemetry,
   getSiteEnergyHistory,
-} from "../services/dashboard/siteDashboardService.js";
+} = siteDashboardService;
 
 const getSites = async (
   req,
@@ -119,6 +126,28 @@ const getEnergyHistory =
       next(error);
     }
   };
+
+export async function
+getSiteTelemetrySnapshotController(
+  req,
+  res,
+  next
+) {
+  try {
+    const result =
+      await getSiteTelemetrySnapshot(
+        req.params.vrmSiteId
+      );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  }
+  catch (error) {
+    return next(error);
+  }
+}
 
 export {
   getSites,

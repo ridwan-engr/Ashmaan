@@ -1,0 +1,365 @@
+﻿import {
+    LIVE_TELEMETRY_MAPPINGS,
+    findLiveTelemetryMapping,
+} from "../services/vrm/vrmLiveTelemetryMapping.js";
+
+import {
+    parseVrmLiveTelemetryMessage,
+} from "../services/vrm/vrmLiveTelemetryParser.js";
+
+const PORTAL_ID =
+    "0cb2b7e31f06";
+
+const SITE_ID =
+    "18053";
+
+let pass = 0;
+let fail = 0;
+
+const check = (
+    condition,
+    message
+) => {
+    if (condition) {
+        pass += 1;
+
+        console.log(
+            `PASS ${pass}: ${message}`
+        );
+
+        return;
+    }
+
+    fail += 1;
+
+    console.error(
+        `FAIL ${fail + pass}: ${message}`
+    );
+};
+
+console.log(
+    "=============================================="
+);
+
+console.log(
+    "ASHMAAN VRM LIVE TELEMETRY PARSER VALIDATION"
+);
+
+console.log(
+    "=============================================="
+);
+
+check(
+    LIVE_TELEMETRY_MAPPINGS.length ===
+        28,
+    "exactly 28 evidence-backed live mappings are configured"
+);
+
+const generatorPower =
+    findLiveTelemetryMapping({
+        serviceType:
+            "genset",
+
+        deviceInstance:
+            40,
+
+        dbusPath:
+            "/Ac/L1/Power",
+    });
+
+check(
+    generatorPower
+        ?.vrmAttributeId ===
+        428,
+    "genset/40 L1 power maps exactly to VRM attribute 428"
+);
+
+const realPower =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/genset/40/Ac/L1/Power`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 4104,
+                })
+            ),
+
+        receivedAt:
+            "2026-09-15T12:00:00.000Z",
+    });
+
+check(
+    realPower.accepted ===
+        true,
+    "allowlisted generator power is accepted"
+);
+
+check(
+    realPower.record
+        ?.vrmAttributeId ===
+        428,
+    "accepted generator power preserves attribute 428"
+);
+
+check(
+    realPower.record
+        ?.numericValue ===
+        4104,
+    "numeric generator power is preserved without conversion"
+);
+
+const observedZero =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/vebus/0/Ac/Out/L3/P`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 0,
+                })
+            ),
+    });
+
+check(
+    observedZero.accepted ===
+        true &&
+    observedZero.record
+        ?.numericValue ===
+        0 &&
+    observedZero.record
+        ?.quality ===
+        "GOOD",
+    "observed zero remains valid numeric zero"
+);
+
+const unavailable =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/vebus/0/Ac/Out/L3/P`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: null,
+                })
+            ),
+    });
+
+check(
+    unavailable.accepted ===
+        true &&
+    unavailable.record
+        ?.numericValue ===
+        null &&
+    unavailable.record
+        ?.quality ===
+        "UNAVAILABLE",
+    "Victron null remains unavailable and is not converted to zero"
+);
+
+const alarm =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/generator/1/Alarms/LowVoltage`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 1,
+                })
+            ),
+    });
+
+check(
+    alarm.accepted ===
+        false &&
+    alarm.reason ===
+        "NOT_ALLOWLISTED",
+    "non-power-flow generator alarm is dropped"
+);
+
+const wrongInstance =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/genset/1/Ac/L1/Power`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 4104,
+                })
+            ),
+    });
+
+check(
+    wrongInstance.accepted ===
+        false &&
+    wrongInstance.reason ===
+        "NOT_ALLOWLISTED",
+    "correct D-Bus path on an unapproved device instance is dropped"
+);
+
+const unknownAttribute =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/system/0/Some/Unknown/Path`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 99,
+                })
+            ),
+    });
+
+check(
+    unknownAttribute.accepted ===
+        false &&
+    unknownAttribute.reason ===
+        "NOT_ALLOWLISTED",
+    "unknown system telemetry is dropped"
+);
+
+const wrongPortal =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            "N/aaaaaaaaaaaa/genset/40/Ac/L1/Power",
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value: 4104,
+                })
+            ),
+    });
+
+check(
+    wrongPortal.accepted ===
+        false &&
+    wrongPortal.reason ===
+        "UNSUPPORTED_TOPIC",
+    "telemetry from another Portal ID is rejected"
+);
+
+const malformedJson =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/genset/40/Ac/L1/Power`,
+
+        payload:
+            Buffer.from(
+                "{bad-json"
+            ),
+    });
+
+check(
+    malformedJson.accepted ===
+        false &&
+    malformedJson.reason ===
+        "INVALID_JSON",
+    "malformed MQTT JSON is rejected"
+);
+
+const numericString =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/genset/40/Ac/L1/Power`,
+
+        payload:
+            Buffer.from(
+                JSON.stringify({
+                    value:
+                        "4104",
+                })
+            ),
+    });
+
+check(
+    numericString.accepted ===
+        false &&
+    numericString.reason ===
+        "NON_NUMERIC_VALUE",
+    "numeric strings are not silently coerced into measurements"
+);
+
+console.log("");
+console.log(
+    "=============================================="
+);
+
+console.log(
+    `PASS: ${pass}`
+);
+
+console.log(
+    `FAIL: ${fail}`
+);
+
+if (fail === 0) {
+    console.log(
+        "L.3D LIVE TELEMETRY PARSER VALIDATION: PASS"
+    );
+} else {
+    console.error(
+        "L.3D LIVE TELEMETRY PARSER VALIDATION: FAIL"
+    );
+
+    process.exitCode = 1;
+}
