@@ -51,7 +51,7 @@ console.log(
 
 check(
     LIVE_TELEMETRY_MAPPINGS.length ===
-        28,
+    28,
     "exactly 28 evidence-backed live mappings are configured"
 );
 
@@ -70,7 +70,7 @@ const generatorPower =
 check(
     generatorPower
         ?.vrmAttributeId ===
-        428,
+    428,
     "genset/40 L1 power maps exactly to VRM attribute 428"
 );
 
@@ -98,21 +98,21 @@ const realPower =
 
 check(
     realPower.accepted ===
-        true,
+    true,
     "allowlisted generator power is accepted"
 );
 
 check(
     realPower.record
         ?.vrmAttributeId ===
-        428,
+    428,
     "accepted generator power preserves attribute 428"
 );
 
 check(
     realPower.record
         ?.numericValue ===
-        4104,
+    4104,
     "numeric generator power is preserved without conversion"
 );
 
@@ -137,13 +137,13 @@ const observedZero =
 
 check(
     observedZero.accepted ===
-        true &&
+    true &&
     observedZero.record
         ?.numericValue ===
-        0 &&
+    0 &&
     observedZero.record
         ?.quality ===
-        "GOOD",
+    "GOOD",
     "observed zero remains valid numeric zero"
 );
 
@@ -168,14 +168,96 @@ const unavailable =
 
 check(
     unavailable.accepted ===
-        true &&
+    true &&
     unavailable.record
         ?.numericValue ===
-        null &&
+    null &&
     unavailable.record
         ?.quality ===
-        "UNAVAILABLE",
-    "Victron null remains unavailable and is not converted to zero"
+    "UNAVAILABLE" &&
+    unavailable.record
+        ?.unavailableReason ===
+    "VALUE_UNAVAILABLE",
+    "Victron null remains explicitly unavailable and is not converted to zero"
+);
+
+/*
+ * Victron publishes a zero-byte
+ * notification payload when a D-Bus
+ * service/device disappears.
+ *
+ * This must become UNAVAILABLE,
+ * never numeric zero.
+ */
+const disappeared =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/system/0/Ac/Genset/L1/Power`,
+
+        payload:
+            Buffer.alloc(0),
+
+        receivedAt:
+            "2026-09-15T12:01:00.000Z",
+    });
+
+check(
+    disappeared.accepted ===
+    true,
+    "empty payload is accepted for an allowlisted telemetry topic"
+);
+
+check(
+    disappeared.record
+        ?.numericValue ===
+    null &&
+    disappeared.record
+        ?.quality ===
+    "UNAVAILABLE",
+    "device disappearance becomes unavailable and never numeric zero"
+);
+
+check(
+    disappeared.record
+        ?.unavailableReason ===
+    "DEVICE_DISAPPEARED",
+    "device disappearance reason is explicit"
+);
+
+
+/*
+ * An empty payload must not bypass
+ * the exact telemetry allowlist.
+ */
+const disappearedUnsupported =
+    parseVrmLiveTelemetryMessage({
+        vrmSiteId:
+            SITE_ID,
+
+        portalId:
+            PORTAL_ID,
+
+        topic:
+            `N/${PORTAL_ID}/settings/0/Some/Unsupported/Path`,
+
+        payload:
+            Buffer.alloc(0),
+    });
+
+check(
+    disappearedUnsupported
+        .accepted ===
+    false &&
+    disappearedUnsupported
+        .reason ===
+    "NOT_ALLOWLISTED",
+    "empty payload cannot bypass the telemetry allowlist"
 );
 
 const alarm =
@@ -199,9 +281,9 @@ const alarm =
 
 check(
     alarm.accepted ===
-        false &&
+    false &&
     alarm.reason ===
-        "NOT_ALLOWLISTED",
+    "NOT_ALLOWLISTED",
     "non-power-flow generator alarm is dropped"
 );
 
@@ -226,9 +308,9 @@ const wrongInstance =
 
 check(
     wrongInstance.accepted ===
-        false &&
+    false &&
     wrongInstance.reason ===
-        "NOT_ALLOWLISTED",
+    "NOT_ALLOWLISTED",
     "correct D-Bus path on an unapproved device instance is dropped"
 );
 
@@ -253,9 +335,9 @@ const unknownAttribute =
 
 check(
     unknownAttribute.accepted ===
-        false &&
+    false &&
     unknownAttribute.reason ===
-        "NOT_ALLOWLISTED",
+    "NOT_ALLOWLISTED",
     "unknown system telemetry is dropped"
 );
 
@@ -280,9 +362,9 @@ const wrongPortal =
 
 check(
     wrongPortal.accepted ===
-        false &&
+    false &&
     wrongPortal.reason ===
-        "UNSUPPORTED_TOPIC",
+    "UNSUPPORTED_TOPIC",
     "telemetry from another Portal ID is rejected"
 );
 
@@ -305,9 +387,9 @@ const malformedJson =
 
 check(
     malformedJson.accepted ===
-        false &&
+    false &&
     malformedJson.reason ===
-        "INVALID_JSON",
+    "INVALID_JSON",
     "malformed MQTT JSON is rejected"
 );
 
@@ -333,9 +415,9 @@ const numericString =
 
 check(
     numericString.accepted ===
-        false &&
+    false &&
     numericString.reason ===
-        "NON_NUMERIC_VALUE",
+    "NON_NUMERIC_VALUE",
     "numeric strings are not silently coerced into measurements"
 );
 

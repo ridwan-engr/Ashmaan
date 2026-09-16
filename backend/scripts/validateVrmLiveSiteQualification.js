@@ -296,18 +296,18 @@ function getObservedMappings(
         if (
             !serviceType ||
             deviceInstance ===
-                null ||
+            null ||
             !dbusPath
         ) {
             continue;
         }
 
         const mapping =
-            findLiveTelemetryMapping(
+            findLiveTelemetryMapping({
                 serviceType,
                 deviceInstance,
-                dbusPath
-            );
+                dbusPath,
+            });
 
         if (!mapping) {
             continue;
@@ -531,6 +531,32 @@ for (
     }
 }
 
+const referenceSite =
+    results.find(
+        (result) =>
+            result.siteId ===
+            "18053"
+    );
+
+if (!referenceSite) {
+    throw new Error(
+        "Reference site 18053 was not returned by VRM."
+    );
+}
+
+console.log("");
+
+console.log(
+    "Reference site 18053:"
+);
+
+console.log(
+    JSON.stringify(
+        referenceSite,
+        null,
+        2
+    )
+);
 
 const qualified =
     results.filter(

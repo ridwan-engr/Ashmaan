@@ -2,6 +2,96 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+const parseBoolean = (
+  value,
+  fallback = false
+) => {
+  if (
+    value === undefined ||
+    value === null ||
+    String(value).trim() === ""
+  ) {
+    return fallback;
+  }
+
+  const normalized =
+    String(value)
+      .trim()
+      .toLowerCase();
+
+  if (
+    [
+      "true",
+      "1",
+      "yes",
+      "on",
+    ].includes(normalized)
+  ) {
+    return true;
+  }
+
+  if (
+    [
+      "false",
+      "0",
+      "no",
+      "off",
+    ].includes(normalized)
+  ) {
+    return false;
+  }
+
+  return fallback;
+};
+
+const parsePositiveInteger = (
+  value,
+  fallback
+) => {
+  const parsed =
+    Number(value);
+
+  if (
+    !Number.isInteger(parsed) ||
+    parsed <= 0
+  ) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+const parseSiteIdList = (
+  value
+) => {
+  if (
+    value === undefined ||
+    value === null ||
+    String(value).trim() === ""
+  ) {
+    return null;
+  }
+
+  const values =
+    String(value)
+      .split(",")
+      .map(
+        (item) =>
+          item.trim()
+      )
+      .filter(Boolean);
+
+  const validSiteIds =
+    values.filter(
+      (item) =>
+        /^\d+$/.test(item)
+    );
+
+  return [
+    ...new Set(validSiteIds),
+  ];
+};
+
 const env = {
   nodeEnv:
     process.env.NODE_ENV ||
@@ -24,7 +114,7 @@ const env = {
     process.env.JWT_EXPIRES_IN ||
     "1d",
 
-  // Frontend
+
   // Frontend / CORS
   corsOrigins: (
     process.env.CORS_ORIGINS ||
@@ -32,7 +122,10 @@ const env = {
     "http://localhost:5173"
   )
     .split(",")
-    .map((origin) => origin.trim())
+    .map(
+      (origin) =>
+        origin.trim()
+    )
     .filter(Boolean),
 
   // Victron VRM
@@ -64,6 +157,24 @@ const env = {
       Number(
         process.env.VRM_MQTT_PORT
       ) || 8883,
+
+    liveFleetEnabled:
+      parseBoolean(
+        process.env.VRM_LIVE_FLEET_ENABLED,
+        false
+      ),
+
+    liveFleetSiteIds:
+      parseSiteIdList(
+        process.env.VRM_LIVE_FLEET_SITE_IDS
+      ),
+
+    liveFleetStartupConcurrency:
+      parsePositiveInteger(
+        process.env.VRM_LIVE_FLEET_STARTUP_CONCURRENCY,
+        4
+      ),
+
   },
 };
 

@@ -74,16 +74,40 @@ const parseNotificationTopic = (
 const parseMqttPayload = (
     payload
 ) => {
+    const text =
+        Buffer.isBuffer(payload)
+            ? payload.toString(
+                "utf8"
+            )
+            : String(
+                payload ?? ""
+            );
+
+    /*
+     * Victron publishes a zero-byte
+     * notification payload when the
+     * corresponding D-Bus service/device
+     * disappears.
+     *
+     * This is NOT numeric zero.
+     */
+    if (text.length === 0) {
+        return {
+            accepted: true,
+            rawValue: null,
+            numericValue: null,
+            quality: "UNAVAILABLE",
+            unavailableReason:
+                "DEVICE_DISAPPEARED",
+        };
+    }
+
     let decoded;
 
     try {
         decoded =
             JSON.parse(
-                Buffer.isBuffer(payload)
-                    ? payload.toString(
-                        "utf8"
-                    )
-                    : String(payload)
+                text
             );
     } catch {
         return {
@@ -113,8 +137,8 @@ const parseMqttPayload = (
         decoded.value;
 
     /*
-     * Victron null means the measurement
-     * is unavailable.
+     * Explicit Victron null means the
+     * measurement is unavailable.
      *
      * Do not convert it to zero.
      */
@@ -124,15 +148,14 @@ const parseMqttPayload = (
             rawValue: null,
             numericValue: null,
             quality: "UNAVAILABLE",
+            unavailableReason:
+                "VALUE_UNAVAILABLE",
         };
     }
 
     /*
-     * The current live power-flow
-     * allowlist is numeric telemetry.
-     *
-     * Boolean/string/object values must
-     * not be coerced into numbers.
+     * Live power-flow allowlist is
+     * numeric telemetry.
      */
     if (
         typeof value !== "number" ||
@@ -150,6 +173,7 @@ const parseMqttPayload = (
         rawValue: value,
         numericValue: value,
         quality: "GOOD",
+        unavailableReason: null,
     };
 };
 
@@ -159,7 +183,7 @@ const parseVrmLiveTelemetryMessage = ({
     topic,
     payload,
     receivedAt =
-        new Date().toISOString(),
+    new Date().toISOString(),
 }) => {
     const topicIdentity =
         parseNotificationTopic(
@@ -236,6 +260,11 @@ const parseVrmLiveTelemetryMessage = ({
             quality:
                 parsedPayload.quality,
 
+            unavailableReason:
+                parsedPayload
+                    .unavailableReason ??
+                null,
+
             timestamp:
                 receivedAt,
 
@@ -249,4 +278,5 @@ export {
     parseNotificationTopic,
     parseMqttPayload,
     parseVrmLiveTelemetryMessage,
+    
 };

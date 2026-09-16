@@ -7,31 +7,37 @@ import http from "node:http";
 
 import env from "./config/env.js";
 import connectDatabase from "./config/database.js";
+
 import apiRoutes from "./routes/index.js";
 import dashboardRoutes
   from "./routes/dashboardRoutes.js";
-
 import siteDashboardRoutes
   from "./routes/siteDashboardRoutes.js";
-
 import reliabilityRoutes
   from "./routes/reliabilityRoutes.js";
+import optimizationDssRoutes
+  from "./routes/optimizationDssRoutes.js";
 
-import notFound from "./middleware/notFound.js";
-import errorHandler from "./middleware/errorHandler.js";
+import notFound
+  from "./middleware/notFound.js";
+import errorHandler
+  from "./middleware/errorHandler.js";
 
 import {
   startVrmScheduler,
   stopVrmScheduler,
 } from "./services/scheduler/vrmScheduler.js";
 
-import optimizationDssRoutes
-  from "./routes/optimizationDssRoutes.js";
-
 import {
   initializeSocketServer,
   closeSocketServer,
 } from "./realtime/socketServer.js";
+
+import {
+  startVrmLiveFleet,
+  stopVrmLiveFleet,
+  getVrmLiveFleetState,
+} from "./services/vrm/vrmLiveFleetService.js";
 
 
 /*
@@ -175,7 +181,7 @@ morgan.token(
         "string"
         ? req.originalUrl
         : typeof req.url ===
-            "string"
+          "string"
           ? req.url
           : "/";
 
@@ -346,49 +352,164 @@ const startServer =
     |--------------------------------------------------------------------------
     | HTTP listener
     |--------------------------------------------------------------------------
+    |
+    | Listener readiness is awaited before dependent runtime services start.
+    |
+    |--------------------------------------------------------------------------
     */
 
-    server.listen(
-      env.port,
-      () => {
-        console.log(
-          "----------------------------------------"
+    await new Promise(
+      (
+        resolveListen,
+        rejectListen
+      ) => {
+        const handleListening =
+          () => {
+            server.off(
+              "error",
+              handleError
+            );
+
+            resolveListen();
+          };
+
+
+        const handleError =
+          (
+            error
+          ) => {
+            server.off(
+              "listening",
+              handleListening
+            );
+
+            rejectListen(
+              error
+            );
+          };
+
+
+        server.once(
+          "listening",
+          handleListening
         );
 
-        console.log(
-          "ASHMAAN Backend"
-        );
 
-        console.log(
-          "----------------------------------------"
-        );
-
-        console.log(
-          `Environment: ${env.nodeEnv}`
-        );
-
-        console.log(
-          `Port: ${env.port}`
-        );
-
-        console.log(
-          `API: http://localhost:${env.port}/api/v1`
-        );
-
-        console.log(
-          "----------------------------------------"
+        server.once(
+          "error",
+          handleError
         );
 
 
-        /*
-        |--------------------------------------------------------------------------
-        | Scheduler starts only after HTTP server startup
-        |--------------------------------------------------------------------------
-        */
-
-        startVrmScheduler();
+        server.listen(
+          env.port
+        );
       }
     );
+
+
+    console.log(
+      "----------------------------------------"
+    );
+
+    console.log(
+      "ASHMAAN Backend"
+    );
+
+    console.log(
+      "----------------------------------------"
+    );
+
+    console.log(
+      `Environment: ${env.nodeEnv}`
+    );
+
+    console.log(
+      `Port: ${env.port}`
+    );
+
+    console.log(
+      `API: http://localhost:${env.port}/api/v1`
+    );
+
+    console.log(
+      "----------------------------------------"
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Historical VRM scheduler
+    |--------------------------------------------------------------------------
+    |
+    | Historical REST synchronization remains independent from the MQTT
+    | realtime transport.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    startVrmScheduler();
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | VRM live MQTT fleet
+    |--------------------------------------------------------------------------
+    |
+    | Live MQTT is explicitly opt-in.
+    |
+    | Starting the backend must not create the production MQTT fleet unless
+    | VRM_LIVE_FLEET_ENABLED=true.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+      env.vrm.liveFleetEnabled
+    ) {
+      const liveFleetScope =
+        env.vrm.liveFleetSiteIds === null
+          ? "ALL_QUALIFIED"
+          : env.vrm.liveFleetSiteIds.length > 0
+            ? env.vrm.liveFleetSiteIds.join(",")
+            : "NONE";
+
+      console.log(
+        `[VRM MQTT Fleet] Starting with bounded concurrency ${env.vrm.liveFleetStartupConcurrency}; scope=${liveFleetScope}...`
+      );
+
+      const fleetStartResult =
+        await startVrmLiveFleet({
+          siteIds:
+            env.vrm.liveFleetSiteIds,
+
+          concurrency:
+            env.vrm.liveFleetStartupConcurrency,
+        });
+
+
+      const fleetState =
+        getVrmLiveFleetState();
+
+
+      console.log(
+        `[VRM MQTT Fleet] Startup complete: selected=${fleetStartResult.selectedSiteCount}, started=${fleetStartResult.startedCount}, failed=${fleetStartResult.failedCount}, connected=${fleetState.connectedCount}`
+      );
+
+
+      if (
+        fleetStartResult.failedCount >
+        0
+      ) {
+        console.warn(
+          `[VRM MQTT Fleet] ${fleetStartResult.failedCount} site(s) failed isolated startup.`
+        );
+      }
+    } else {
+      console.log(
+        "[VRM MQTT Fleet] Disabled by configuration."
+      );
+    }
 
 
     /*
@@ -446,25 +567,20 @@ const startServer =
         |--------------------------------------------------------------------------
         | 1. Stop future scheduler work
         |--------------------------------------------------------------------------
-        |
-        | Clearing scheduler timeout/interval handles prevents new scheduled
-        | jobs from being launched while the process is shutting down.
-        |
-        |--------------------------------------------------------------------------
         */
+
 
         try {
           stopVrmScheduler();
         } catch (
-          error
+        error
         ) {
           console.error(
-            `[Shutdown] Scheduler stop failed: ${
-              error instanceof Error
-                ? error.message
-                : String(
-                    error
-                  )
+            `[Shutdown] Scheduler stop failed: ${error instanceof Error
+              ? error.message
+              : String(
+                error
+              )
             }`
           );
         }
@@ -473,13 +589,6 @@ const startServer =
         /*
         |--------------------------------------------------------------------------
         | 2. Forced termination fallback
-        |--------------------------------------------------------------------------
-        |
-        | Graceful shutdown is allowed a finite drain period.
-        |
-        | If HTTP work, database shutdown, or another runtime resource prevents
-        | completion, the process cannot remain alive indefinitely.
-        |
         |--------------------------------------------------------------------------
         */
 
@@ -510,11 +619,47 @@ const startServer =
         try {
           /*
           |--------------------------------------------------------------------------
-          | 3. Close Socket.IO live transport
+          | 3. Stop VRM live MQTT fleet
           |--------------------------------------------------------------------------
           |
-          | Disconnect live clients and stop the realtime transport before the
-          | underlying HTTP server is closed.
+          | MQTT publishers must stop before Socket.IO is closed.
+          |
+          |--------------------------------------------------------------------------
+          */
+
+          if (
+            env.vrm.liveFleetEnabled
+          ) {
+            const fleetStopResult =
+              await stopVrmLiveFleet({
+                concurrency:
+                  env.vrm.liveFleetStartupConcurrency,
+              });
+
+
+            console.log(
+              `[Shutdown] VRM MQTT fleet stopped: targeted=${fleetStopResult.targetSiteCount}, stopped=${fleetStopResult.stoppedCount}, failed=${fleetStopResult.failedCount}`
+            );
+
+
+            if (
+              fleetStopResult.failedCount >
+              0
+            ) {
+              console.error(
+                `[Shutdown] ${fleetStopResult.failedCount} VRM MQTT site(s) failed graceful stop.`
+              );
+            }
+          }
+
+
+          /*
+          |--------------------------------------------------------------------------
+          | 4. Close Socket.IO live transport
+          |--------------------------------------------------------------------------
+          |
+          | All MQTT telemetry producers have now been stopped, so the realtime
+          | transport can be closed safely.
           |
           |--------------------------------------------------------------------------
           */
@@ -524,13 +669,7 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
-          | 4. Stop accepting new HTTP connections
-          |--------------------------------------------------------------------------
-          |
-          | server.close():
-          | - stops accepting new connections
-          | - allows active requests to finish
-          |
+          | 5. Stop accepting new HTTP connections
           |--------------------------------------------------------------------------
           */
 
@@ -541,14 +680,7 @@ const startServer =
             ) => {
               /*
               |--------------------------------------------------------------------------
-              | The HTTP server may already have been closed by Socket.IO.
-              |--------------------------------------------------------------------------
-              |
-              | If closeSocketServer() closes the underlying HTTP listener,
-              | calling server.close() again may report ERR_SERVER_NOT_RUNNING.
-              |
-              | server.listening therefore protects the HTTP close operation.
-              |
+              | Socket.IO may already have closed the underlying HTTP listener
               |--------------------------------------------------------------------------
               */
 
@@ -585,10 +717,6 @@ const startServer =
               |--------------------------------------------------------------------------
               | Close idle keep-alive connections when supported by Node
               |--------------------------------------------------------------------------
-              |
-              | This does not abort active requests.
-              |
-              |--------------------------------------------------------------------------
               */
 
               server
@@ -605,13 +733,7 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
-          | 5. Close MongoDB / Mongoose
-          |--------------------------------------------------------------------------
-          |
-          | connectDatabase() uses mongoose.connect(), therefore this closes the
-          | same default Mongoose connection rather than creating another DB
-          | connection path.
-          |
+          | 6. Close MongoDB / Mongoose
           |--------------------------------------------------------------------------
           */
 
@@ -640,7 +762,7 @@ const startServer =
 
           /*
           |--------------------------------------------------------------------------
-          | 6. Successful graceful shutdown
+          | 7. Successful graceful shutdown
           |--------------------------------------------------------------------------
           */
 
@@ -658,7 +780,7 @@ const startServer =
             0
           );
         } catch (
-          error
+        error
         ) {
           /*
           |--------------------------------------------------------------------------
@@ -667,14 +789,42 @@ const startServer =
           */
 
           console.error(
-            `[Shutdown] Graceful shutdown failed: ${
-              error instanceof Error
-                ? error.message
-                : String(
-                    error
-                  )
+            `[Shutdown] Graceful shutdown failed: ${error instanceof Error
+              ? error.message
+              : String(
+                error
+              )
             }`
           );
+
+
+          /*
+          |--------------------------------------------------------------------------
+          | Best-effort VRM MQTT fleet cleanup
+          |--------------------------------------------------------------------------
+          */
+
+          if (
+            env.vrm.liveFleetEnabled
+          ) {
+            try {
+              await stopVrmLiveFleet({
+                concurrency:
+                  env.vrm.liveFleetStartupConcurrency,
+              });
+            } catch (
+            fleetError
+            ) {
+              console.error(
+                `[Shutdown] VRM MQTT fleet cleanup failed: ${fleetError instanceof Error
+                  ? fleetError.message
+                  : String(
+                    fleetError
+                  )
+                }`
+              );
+            }
+          }
 
 
           /*
@@ -686,15 +836,54 @@ const startServer =
           try {
             await closeSocketServer();
           } catch (
-            socketError
+          socketError
           ) {
             console.error(
-              `[Shutdown] Socket.IO cleanup failed: ${
-                socketError instanceof Error
-                  ? socketError.message
-                  : String(
-                      socketError
-                    )
+              `[Shutdown] Socket.IO cleanup failed: ${socketError instanceof Error
+                ? socketError.message
+                : String(
+                  socketError
+                )
+              }`
+            );
+          }
+
+
+          /*
+          |--------------------------------------------------------------------------
+          | Best-effort HTTP cleanup
+          |--------------------------------------------------------------------------
+          */
+
+          try {
+            if (
+              server.listening
+            ) {
+              await new Promise(
+                (
+                  resolveClose
+                ) => {
+                  server.close(
+                    () => {
+                      resolveClose();
+                    }
+                  );
+
+                  server
+                    .closeIdleConnections
+                    ?.();
+                }
+              );
+            }
+          } catch (
+          httpError
+          ) {
+            console.error(
+              `[Shutdown] HTTP cleanup failed: ${httpError instanceof Error
+                ? httpError.message
+                : String(
+                  httpError
+                )
               }`
             );
           }
@@ -721,18 +910,21 @@ const startServer =
               );
             }
           } catch (
-            databaseError
+          databaseError
           ) {
             console.error(
-              `[Shutdown] MongoDB disconnect failed: ${
-                databaseError instanceof Error
-                  ? databaseError.message
-                  : String(
-                      databaseError
-                    )
+              `[Shutdown] MongoDB disconnect failed: ${databaseError instanceof Error
+                ? databaseError.message
+                : String(
+                  databaseError
+                )
               }`
             );
           }
+
+
+          app.locals.databaseStatus =
+            "disconnected";
 
 
           clearTimeout(
@@ -786,12 +978,11 @@ startServer()
       error
     ) => {
       console.error(
-        `[Startup] ASHMAAN backend failed to start: ${
-          error instanceof Error
-            ? error.message
-            : String(
-                error
-              )
+        `[Startup] ASHMAAN backend failed to start: ${error instanceof Error
+          ? error.message
+          : String(
+            error
+          )
         }`
       );
 

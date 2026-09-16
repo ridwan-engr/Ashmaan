@@ -12,6 +12,10 @@ import {
 } from "./vrmLiveTelemetryParser.js";
 
 import {
+    qualifyLiveSiteMappings,
+} from "./vrmLiveSiteQualificationService.js";
+
+import {
     publishSiteTelemetry,
 } from "../../realtime/socketServer.js";
 
@@ -36,20 +40,67 @@ const RECONNECT_MIN_MS =
 const RECONNECT_MAX_MS =
     60_000;
 
+const RECONNECT_JITTER_RATIO =
+    0.20;
+
+/*
+ * Build the exact set of notification
+ * topics permitted to enter ASHMAAN.
+ *
+ * No broad Portal notification wildcard
+ * subscription is used.
+ *
+ * 28 evidence-backed telemetry topics
+ * + full_publish_completed marker.
+ */
+const buildNotificationTopics = (
+    portalId,
+    approvedMappings
+) => {
+    if (
+        !Array.isArray(
+            approvedMappings
+        ) ||
+        approvedMappings.length ===
+        0
+    ) {
+        throw new Error(
+            "At least one site-qualified live telemetry mapping is required."
+        );
+    }
+
+    const telemetryTopics =
+        approvedMappings.map(
+            (mapping) =>
+                `N/${portalId}/${mapping.serviceType}/${mapping.deviceInstance}${mapping.dbusPath}`
+        );
+
+    /*
+     * Defensive deduplication.
+     *
+     * Qualification should already
+     * produce unique tuple identities,
+     * but production subscription must
+     * not rely on that assumption.
+     */
+    const uniqueTelemetryTopics =
+        Array.from(
+            new Set(
+                telemetryTopics
+            )
+        );
+
+    return Object.freeze([
+        ...uniqueTelemetryTopics,
+        `N/${portalId}/full_publish_completed`,
+    ]);
+};
+
 const connections =
     new Map();
 
 let shuttingDown =
     false;
-
-const sleep = (ms) =>
-    new Promise(
-        (resolve) =>
-            setTimeout(
-                resolve,
-                ms
-            )
-    );
 
 const normalizeSiteId = (
     value
@@ -239,12 +290,18 @@ const publishKeepalive = (
             const payload =
                 suppressRepublish
                     ? JSON.stringify({
-                          "keepalive-options": [
-                              "suppress-republish",
-                          ],
-                      })
+                        "keepalive-options": [
+                            "suppress-republish",
+                        ],
+                    })
                     : "";
 
+            /*
+             * Read/keepalive request only.
+             *
+             * ASHMAAN does not publish
+             * VRM write/control topics.
+             */
             state.client.publish(
                 `R/${state.portalId}/keepalive`,
                 payload,
@@ -325,19 +382,19 @@ const scheduleReconnect = (
         state.stopping ||
         state.reconnectTimer
     ) {
-        return;
+        return false;
     }
 
     const delay =
-        Math.min(
-            RECONNECT_MIN_MS *
-                2 **
-                    state.reconnectAttempt,
-            RECONNECT_MAX_MS
+        calculateReconnectDelay(
+            state.reconnectAttempt
         );
 
     state.reconnectAttempt +=
         1;
+
+    state.lastReconnectDelayMs =
+        delay;
 
     console.warn(
         `[VRM MQTT] site ${state.vrmSiteId} reconnect scheduled in ${delay} ms`
@@ -349,9 +406,20 @@ const scheduleReconnect = (
                 state.reconnectTimer =
                     null;
 
+                /*
+                 * The state must still be
+                 * the registered owner of
+                 * this site. This prevents
+                 * a stale timer from
+                 * resurrecting a stopped or
+                 * replaced connection.
+                 */
                 if (
                     shuttingDown ||
-                    state.stopping
+                    state.stopping ||
+                    connections.get(
+                        state.vrmSiteId
+                    ) !== state
                 ) {
                     return;
                 }
@@ -376,6 +444,93 @@ const scheduleReconnect = (
 
     state.reconnectTimer
         ?.unref?.();
+
+    return true;
+};
+
+const calculateReconnectDelay = (
+    reconnectAttempt,
+    randomValue = Math.random()
+) => {
+    const normalizedAttempt =
+        Math.max(
+            0,
+            Math.floor(
+                Number(
+                    reconnectAttempt
+                ) || 0
+            )
+        );
+
+    /*
+     * Clamp the exponent as well as the
+     * resulting delay so an extremely
+     * large reconnectAttempt cannot
+     * overflow 2 ** attempt.
+     */
+    const maximumExponent =
+        Math.ceil(
+            Math.log2(
+                RECONNECT_MAX_MS /
+                RECONNECT_MIN_MS
+            )
+        );
+
+    const boundedAttempt =
+        Math.min(
+            normalizedAttempt,
+            maximumExponent
+        );
+
+    const baseDelay =
+        Math.min(
+            RECONNECT_MIN_MS *
+            2 **
+            boundedAttempt,
+            RECONNECT_MAX_MS
+        );
+
+    const normalizedRandom =
+        Number.isFinite(
+            Number(randomValue)
+        )
+            ? Math.min(
+                1,
+                Math.max(
+                    0,
+                    Number(
+                        randomValue
+                    )
+                )
+            )
+            : 0.5;
+
+    /*
+     * Convert [0,1] into [-1,+1].
+     */
+    const signedJitter =
+        normalizedRandom * 2 - 1;
+
+    const jitter =
+        baseDelay *
+        RECONNECT_JITTER_RATIO *
+        signedJitter;
+
+    /*
+     * The final reconnect delay itself
+     * remains inside the configured
+     * production bounds.
+     */
+    return Math.round(
+        Math.min(
+            RECONNECT_MAX_MS,
+            Math.max(
+                RECONNECT_MIN_MS,
+                baseDelay +
+                jitter
+            )
+        )
+    );
 };
 
 const handleMessage = (
@@ -383,6 +538,13 @@ const handleMessage = (
     topic,
     payload
 ) => {
+    /*
+     * Victron full-publication completion
+     * remains useful diagnostic metadata.
+     *
+     * It is not treated as the sole
+     * live-readiness criterion.
+     */
     if (
         topic ===
         `N/${state.portalId}/full_publish_completed`
@@ -416,6 +578,20 @@ const handleMessage = (
     if (!parsed.accepted) {
         return;
     }
+
+    /*
+     * Only parser-approved telemetry
+     * contributes to live readiness.
+     *
+     * Rejected, unmapped or malformed
+     * MQTT messages cannot make the
+     * service appear healthy.
+     */
+    state.receivedTelemetryCount +=
+        1;
+
+    state.lastTelemetryAt =
+        parsed.record.timestamp;
 
     /*
      * Live telemetry is intentionally
@@ -468,11 +644,32 @@ const connectState =
             state
         );
 
+        /*
+         * A new MQTT session must prove
+         * its own subscription and live
+         * telemetry readiness.
+         */
+        state.subscriptionCount =
+            0;
+
+        state.receivedTelemetryCount =
+            0;
+
+        state.lastTelemetryAt =
+            null;
+
+        state.approvedMappings =
+            Object.freeze([]);
+
+        state.approvedMappingCount =
+            0;
+
         if (
             state.client
         ) {
             try {
-                state.client.removeAllListeners();
+                state.client
+                    .removeAllListeners();
 
                 state.client.end(
                     true
@@ -501,6 +698,33 @@ const connectState =
 
         state.fullPublishCompleted =
             false;
+
+        state.receivedTelemetryCount =
+            0;
+
+        state.lastTelemetryAt =
+            null;
+
+        const qualification =
+            await qualifyLiveSiteMappings(
+                state.vrmSiteId
+            );
+
+        if (
+            qualification
+                .approvedMappingCount <=
+            0
+        ) {
+            throw new Error(
+                `VRM installation ${state.vrmSiteId} has no evidence-backed live telemetry mappings.`
+            );
+        }
+
+        state.approvedMappings =
+            qualification.approvedMappings;
+
+        state.approvedMappingCount =
+            qualification.approvedMappingCount;
 
         const ca =
             readVrmCa();
@@ -577,6 +801,20 @@ const connectState =
                 stopKeepalive(
                     state
                 );
+
+                /*
+                 * A disconnected client
+                 * no longer has an active
+                 * MQTT subscription.
+                 *
+                 * Historical evidence of
+                 * the last accepted live
+                 * telemetry is retained
+                 * until the next connection
+                 * attempt resets it.
+                 */
+                state.subscriptionCount =
+                    0;
 
                 if (
                     shuttingDown ||
@@ -668,13 +906,27 @@ const connectState =
             }
         );
 
+        /*
+         * Subscribe only to exact
+         * evidence-backed notification
+         * topics.
+         *
+         * Broad Portal notification
+         * subscriptions are prohibited.
+         */
+        const notificationTopics =
+            buildNotificationTopics(
+                portalId,
+                state.approvedMappings
+            );
+
         await new Promise(
             (
                 resolve,
                 reject
             ) => {
                 client.subscribe(
-                    `N/${portalId}/#`,
+                    notificationTopics,
                     {
                         qos: 0,
                     },
@@ -694,20 +946,18 @@ const connectState =
                             Array.isArray(
                                 granted
                             ) &&
-                            granted.length >
-                                0 &&
+                            granted.length ===
+                            notificationTopics.length &&
                             granted.every(
                                 (entry) =>
                                     entry.qos !==
                                     128
                             );
 
-                        if (
-                            !accepted
-                        ) {
+                        if (!accepted) {
                             reject(
                                 new Error(
-                                    `VRM MQTT subscription was not granted for site ${state.vrmSiteId}.`
+                                    `VRM MQTT exact-topic subscription was not fully granted for site ${state.vrmSiteId}.`
                                 )
                             );
 
@@ -720,6 +970,14 @@ const connectState =
             }
         );
 
+        state.subscriptionCount =
+            notificationTopics.length;
+
+        /*
+         * Initial empty keepalive asks
+         * Victron to republish current
+         * values for subscribed topics.
+         */
         await publishKeepalive(
             state,
             false
@@ -727,6 +985,9 @@ const connectState =
 
         state.reconnectAttempt =
             0;
+
+        state.lastReconnectDelayMs =
+            null;
 
         startKeepalive(
             state
@@ -771,6 +1032,12 @@ const startVrmLiveTelemetry =
             mqttHost:
                 null,
 
+            approvedMappings:
+                Object.freeze([]),
+
+            approvedMappingCount:
+                0,
+
             client:
                 null,
 
@@ -783,8 +1050,20 @@ const startVrmLiveTelemetry =
             reconnectAttempt:
                 0,
 
+            lastReconnectDelayMs:
+                null,
+
             fullPublishCompleted:
                 false,
+
+            subscriptionCount:
+                0,
+
+            receivedTelemetryCount:
+                0,
+
+            lastTelemetryAt:
+                null,
 
             stopping:
                 false,
@@ -802,8 +1081,48 @@ const startVrmLiveTelemetry =
 
             return state;
         } catch (error) {
-            scheduleReconnect(
+            /*
+             * Initial-start failure belongs to
+             * the caller.
+             *
+             * Do not arm an autonomous reconnect
+             * before the caller has accepted
+             * ownership of this live connection.
+             *
+             * Fleet startup can therefore mark
+             * the site FAILED and clean it up
+             * without racing a pending reconnect.
+             */
+            state.stopping =
+                true;
+
+            stopKeepalive(
                 state
+            );
+
+            if (state.client) {
+                const client =
+                    state.client;
+
+                state.client =
+                    null;
+
+                state.subscriptionCount =
+                    0;
+
+                client.removeAllListeners();
+
+                try {
+                    client.end(
+                        true
+                    );
+                } catch {
+                    // Best-effort cleanup.
+                }
+            }
+
+            connections.delete(
+                normalizedSiteId
             );
 
             throw error;
@@ -854,6 +1173,9 @@ const stopVrmLiveTelemetry =
 
             state.client =
                 null;
+
+            state.subscriptionCount =
+                0;
 
             client.removeAllListeners();
 
@@ -924,6 +1246,10 @@ const getVrmLiveTelemetryState =
         /*
          * Never expose credentials,
          * MQTT password or access token.
+         *
+         * Only operationally safe
+         * connection/readiness metadata
+         * is returned.
          */
         return Object.freeze({
             vrmSiteId:
@@ -940,11 +1266,30 @@ const getVrmLiveTelemetryState =
                     ?.connected ===
                 true,
 
+            approvedMappingCount:
+                state.approvedMappingCount,
+
             fullPublishCompleted:
                 state.fullPublishCompleted,
 
+            subscriptionCount:
+                state.subscriptionCount,
+
+            receivedTelemetryCount:
+                state.receivedTelemetryCount,
+
+            lastTelemetryAt:
+                state.lastTelemetryAt,
+
             reconnectAttempt:
                 state.reconnectAttempt,
+
+            reconnectScheduled:
+                state.reconnectTimer !==
+                null,
+
+            lastReconnectDelayMs:
+                state.lastReconnectDelayMs,
 
             stopping:
                 state.stopping,
@@ -956,4 +1301,5 @@ export {
     stopVrmLiveTelemetry,
     closeVrmLiveTelemetry,
     getVrmLiveTelemetryState,
+    calculateReconnectDelay,
 };
