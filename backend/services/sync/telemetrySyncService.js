@@ -17,6 +17,11 @@ import {
     deriveInstallationStatus,
 } from "../status/installationStatusService.js";
 
+import {
+    HISTORICAL_TELEMETRY_ATTRIBUTE_IDS,
+    getRecordVrmAttributeId,
+    isHistoricalTelemetryAllowed,
+} from "./telemetryPersistencePolicy.js";
 
 const extractRecords = (response) => {
     if (
@@ -42,6 +47,11 @@ const extractRecords = (response) => {
     return [];
 };
 
+/*
+|--------------------------------------------------------------------------
+| Device lookup
+|--------------------------------------------------------------------------
+*/
 
 const buildDeviceLookup = async (
     installation
@@ -55,7 +65,10 @@ const buildDeviceLookup = async (
     const lookup =
         new Map();
 
-    for (const device of devices) {
+    for (
+        const device
+        of devices
+    ) {
         const key =
             `${device.deviceType}:${device.deviceInstance}`;
 
@@ -68,6 +81,12 @@ const buildDeviceLookup = async (
     return lookup;
 };
 
+
+/*
+|--------------------------------------------------------------------------
+| Telemetry synchronization state
+|--------------------------------------------------------------------------
+*/
 
 const getTelemetrySyncState = async (
     installation
@@ -114,6 +133,11 @@ const getTelemetrySyncState = async (
     );
 };
 
+/*
+|--------------------------------------------------------------------------
+| Installation telemetry synchronization
+|--------------------------------------------------------------------------
+*/
 
 const syncTelemetryForInstallation =
     async (
@@ -124,15 +148,45 @@ const syncTelemetryForInstallation =
             count = 200,
 
             /*
-             * Small overlap protects us from
-             * measurements arriving late with a
-             * timestamp close to the checkpoint.
+             * Small overlap protects against
+             * measurements arriving late around
+             * the previous checkpoint.
              *
-             * MongoDB's unique telemetry index
-             * still prevents duplicates.
+             * MongoDB's unique telemetry identity
+             * prevents duplicate persistence.
              */
             overlapSeconds = 120,
         } = options;
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate synchronization options
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            !Number.isInteger(
+                count
+            ) ||
+            count <= 0
+        ) {
+            throw new Error(
+                "Telemetry sync count must be a positive integer."
+            );
+        }
+
+        if (
+            !Number.isFinite(
+                overlapSeconds
+            ) ||
+            overlapSeconds < 0
+        ) {
+            throw new Error(
+                "Telemetry overlapSeconds must be a non-negative number."
+            );
+        }
+
 
         const startedAt =
             Date.now();
@@ -144,6 +198,7 @@ const syncTelemetryForInstallation =
             await getTelemetrySyncState(
                 installation
             );
+
 
         /*
         |--------------------------------------------------------------------------
@@ -164,10 +219,11 @@ const syncTelemetryForInstallation =
             }
         );
 
+
         try {
             /*
             |--------------------------------------------------------------------------
-            | Retrieve current VRM diagnostics
+            | Retrieve VRM diagnostics
             |--------------------------------------------------------------------------
             */
 
@@ -190,6 +246,68 @@ const syncTelemetryForInstallation =
                 extractRecords(
                     response
                 );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Apply ASHMAAN historical persistence policy
+            |--------------------------------------------------------------------------
+            |
+            | Filtering happens BEFORE checkpoint filtering.
+            |
+            | This prevents unrelated VRM diagnostics from:
+            |
+            | - entering MongoDB;
+            | - influencing the engineering telemetry checkpoint;
+            | - inflating recordsProcessed;
+            | - appearing to represent ASHMAAN telemetry coverage.
+            |
+            */
+
+            const allowedRecords = [];
+
+            let policyRejected = 0;
+
+            let missingAttributeId = 0;
+
+            for (
+                const record
+                of records
+            ) {
+                const vrmAttributeId =
+                    getRecordVrmAttributeId(
+                        record
+                    );
+
+                if (
+                    vrmAttributeId ===
+                    null
+                ) {
+                    missingAttributeId +=
+                        1;
+
+                    policyRejected +=
+                        1;
+
+                    continue;
+                }
+
+                if (
+                    !isHistoricalTelemetryAllowed(
+                        record
+                    )
+                ) {
+                    policyRejected +=
+                        1;
+
+                    continue;
+                }
+
+                allowedRecords.push(
+                    record
+                );
+            }
+
 
             /*
             |--------------------------------------------------------------------------
@@ -220,12 +338,13 @@ const syncTelemetryForInstallation =
                     Math.floor(
                         checkpointDate
                             .getTime() /
-                            1000
+                        1000
                     );
             }
 
+
             /*
-             * Use an overlap instead of a strict
+             * Use overlap rather than a strict
              * timestamp > checkpoint comparison.
              *
              * Example:
@@ -233,11 +352,11 @@ const syncTelemetryForInstallation =
              * checkpoint = 10:00:00
              * overlap    = 120 seconds
              *
-             * We reconsider records from 09:58:00.
+             * Reconsider from 09:58:00.
              *
-             * Existing ones are rejected safely by
-             * the unique index; genuinely new ones
-             * can still be inserted.
+             * Existing records match the unique
+             * telemetry identity and are therefore
+             * not duplicated.
              */
 
             const minimumEpoch =
@@ -246,8 +365,15 @@ const syncTelemetryForInstallation =
                     overlapSeconds
                     : null;
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Checkpoint candidate filtering
+            |--------------------------------------------------------------------------
+            */
+
             const candidateRecords =
-                records.filter(
+                allowedRecords.filter(
                     (record) => {
                         const timestamp =
                             Number(
@@ -255,12 +381,10 @@ const syncTelemetryForInstallation =
                             );
 
                         /*
-                         * Keep malformed timestamps
-                         * in the candidate collection.
-                         *
-                         * The normalizer/validation
-                         * stage will classify them as
-                         * invalid.
+                         * Preserve malformed timestamps
+                         * until normalization/validation
+                         * so they are counted correctly
+                         * as invalid.
                          */
                         if (
                             !Number.isFinite(
@@ -285,6 +409,7 @@ const syncTelemetryForInstallation =
                     }
                 );
 
+
             /*
             |--------------------------------------------------------------------------
             | Device association
@@ -301,12 +426,10 @@ const syncTelemetryForInstallation =
             let invalid = 0;
 
             /*
-             * Start with the previous checkpoint.
+             * Start from the previous checkpoint.
              *
-             * This ensures that if the current VRM
-             * response contains only overlapping
-             * existing records, lastSeenAt does not
-             * move artificially to the current time.
+             * The checkpoint is advanced only by
+             * valid, policy-approved telemetry.
              */
             let newestTimestamp =
                 checkpointDate
@@ -314,6 +437,13 @@ const syncTelemetryForInstallation =
                         checkpointDate
                     )
                     : null;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Normalize and prepare persistence operations
+            |--------------------------------------------------------------------------
+            */
 
             for (
                 const record
@@ -336,6 +466,15 @@ const syncTelemetryForInstallation =
                         }
                     );
 
+
+                /*
+                 * Normalization remains authoritative
+                 * for telemetry semantics.
+                 *
+                 * Missing values are NOT converted to
+                 * zero here.
+                 */
+
                 if (
                     !normalized.timestamp ||
                     Number.isNaN(
@@ -349,19 +488,46 @@ const syncTelemetryForInstallation =
                     )
                 ) {
                     invalid += 1;
+
                     continue;
                 }
+
+
+                /*
+                 * Defense in depth:
+                 *
+                 * The normalized attribute ID must
+                 * still belong to the historical
+                 * persistence policy.
+                 */
+
+                if (
+                    !HISTORICAL_TELEMETRY_ATTRIBUTE_IDS
+                        .has(
+                            Number(
+                                normalized
+                                    .vrmAttributeId
+                            )
+                        )
+                ) {
+                    policyRejected +=
+                        1;
+
+                    continue;
+                }
+
 
                 const normalizedTimestamp =
                     new Date(
                         normalized.timestamp
                     );
 
+
                 /*
-                 * Keep track of the greatest valid
-                 * telemetry timestamp successfully
-                 * considered.
+                 * Track greatest valid,
+                 * policy-approved telemetry timestamp.
                  */
+
                 if (
                     !newestTimestamp ||
                     normalizedTimestamp >
@@ -370,6 +536,13 @@ const syncTelemetryForInstallation =
                     newestTimestamp =
                         normalizedTimestamp;
                 }
+
+
+                /*
+                 * Preserve existing telemetry identity.
+                 *
+                 * DO NOT weaken this identity.
+                 */
 
                 operations.push({
                     updateOne: {
@@ -408,6 +581,7 @@ const syncTelemetryForInstallation =
                 });
             }
 
+
             /*
             |--------------------------------------------------------------------------
             | Bulk persistence
@@ -437,68 +611,128 @@ const syncTelemetryForInstallation =
                 Date.now() -
                 databaseStartedAt;
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Persistence accounting
+            |--------------------------------------------------------------------------
+            */
+
             const inserted =
                 databaseResult
-                    ?.upsertedCount ||
+                    ?.upsertedCount ??
                 0;
 
             const existing =
                 databaseResult
-                    ?.matchedCount ||
+                    ?.matchedCount ??
                 0;
+
+            const persistedOperations =
+                operations.length;
+
 
             /*
             |--------------------------------------------------------------------------
             | Advance telemetry checkpoint
             |--------------------------------------------------------------------------
             |
-            | Checkpoint advances only after
-            | successful telemetry persistence.
+            | Checkpoint advances only after successful
+            | persistence.
+            |
+            | It is based only on valid,
+            | policy-approved telemetry.
             |
             */
 
             const successfulSyncAt =
                 new Date();
 
+
+            const syncStateSet = {
+                lastSuccessfulSyncAt:
+                    successfulSyncAt,
+
+                status:
+                    "SUCCESS",
+
+                lastError:
+                    null,
+
+                metadata: {
+                    lastReceived:
+                        records.length,
+
+                    lastAllowed:
+                        allowedRecords.length,
+
+                    lastPolicyRejected:
+                        policyRejected,
+
+                    lastMissingAttributeId:
+                        missingAttributeId,
+
+                    lastCandidates:
+                        candidateRecords.length,
+
+                    lastCheckpointFiltered:
+                        allowedRecords.length -
+                        candidateRecords.length,
+
+                    lastProcessed:
+                        persistedOperations,
+
+                    lastInserted:
+                        inserted,
+
+                    lastExisting:
+                        existing,
+
+                    lastInvalid:
+                        invalid,
+
+                    overlapSeconds,
+
+                    historicalAttributePolicySize:
+                        HISTORICAL_TELEMETRY_ATTRIBUTE_IDS
+                            .size,
+                },
+            };
+
+
+            /*
+             * Do not write a null checkpoint for an
+             * installation that has never produced a
+             * valid policy-approved telemetry record.
+             */
+
+            if (newestTimestamp) {
+                syncStateSet
+                    .lastRecordTimestamp =
+                    newestTimestamp;
+            }
+
+
             await SyncState.findByIdAndUpdate(
                 syncState._id,
                 {
-                    $set: {
-                        lastRecordTimestamp:
-                            newestTimestamp,
+                    $set:
+                        syncStateSet,
 
-                        lastSuccessfulSyncAt:
-                            successfulSyncAt,
-
-                        status:
-                            "SUCCESS",
-
-                        lastError:
-                            null,
-
-                        metadata: {
-                            lastReceived:
-                                records.length,
-
-                            lastCandidates:
-                                candidateRecords.length,
-
-                            lastInserted:
-                                inserted,
-
-                            lastExisting:
-                                existing,
-
-                            lastInvalid:
-                                invalid,
-
-                            overlapSeconds,
-                        },
-                    },
-
+                    /*
+                     * recordsProcessed means valid
+                     * telemetry operations submitted
+                     * successfully to MongoDB.
+                     *
+                     * It does NOT mean newly inserted
+                     * documents.
+                     *
+                     * Insert/match accounting is kept
+                     * separately in metadata.
+                     */
                     $inc: {
                         recordsProcessed:
-                            operations.length,
+                            persistedOperations,
                     },
                 },
                 {
@@ -507,20 +741,22 @@ const syncTelemetryForInstallation =
                 }
             );
 
+
             /*
             |--------------------------------------------------------------------------
             | Derive installation monitoring status
             |--------------------------------------------------------------------------
             |
-            | IMPORTANT:
+            | lastSeenAt:
+            |     latest valid policy-approved
+            |     telemetry timestamp.
             |
-            | lastSeenAt is derived from the latest
-            | valid telemetry timestamp.
+            | lastSyncAt:
+            |     time ASHMAAN successfully completed
+            |     the synchronization.
             |
-            | lastSyncAt represents when ASHMAAN
-            | successfully synchronized telemetry.
-            |
-            | These are intentionally different.
+            | These concepts remain intentionally
+            | separate.
             |
             */
 
@@ -541,6 +777,7 @@ const syncTelemetryForInstallation =
                         successfulSyncAt,
                 });
 
+
             const installationUpdate = {
                 lastSyncAt:
                     successfulSyncAt,
@@ -549,23 +786,19 @@ const syncTelemetryForInstallation =
                     derivedStatus.status,
             };
 
+
             /*
-             * Only update lastSeenAt when an actual
-             * valid telemetry timestamp exists.
+             * Only update lastSeenAt when actual
+             * valid policy-approved telemetry exists.
              */
+
             if (newestTimestamp) {
                 installationUpdate
                     .lastSeenAt =
                     newestTimestamp;
             }
 
-            /*
-             * Persist monitoring freshness.
-             *
-             * deriveInstallationStatus()
-             * preserves INACTIVE status and
-             * syncEnabled === false semantics.
-             */
+
             await Installation.updateOne(
                 {
                     _id:
@@ -576,6 +809,7 @@ const syncTelemetryForInstallation =
                         installationUpdate,
                 }
             );
+
 
             /*
             |--------------------------------------------------------------------------
@@ -615,21 +849,34 @@ const syncTelemetryForInstallation =
                 received:
                     records.length,
 
+                allowed:
+                    allowedRecords.length,
+
+                policyRejected,
+
+                missingAttributeId,
+
                 candidates:
                     candidateRecords.length,
 
-                filtered:
-                    records.length -
+                checkpointFiltered:
+                    allowedRecords.length -
                     candidateRecords.length,
 
                 processed:
-                    operations.length,
+                    persistedOperations,
 
                 inserted,
 
                 existing,
 
                 invalid,
+
+                policy: {
+                    historicalAttributeCount:
+                        HISTORICAL_TELEMETRY_ATTRIBUTE_IDS
+                            .size,
+                },
 
                 performance: {
                     vrmFetchMs,
@@ -647,9 +894,9 @@ const syncTelemetryForInstallation =
             | Failure handling
             |--------------------------------------------------------------------------
             |
-            | A failed ASHMAAN/VRM synchronization
-            | does NOT prove that the physical site
-            | is offline.
+            | Synchronization failure does NOT prove
+            | that the physical installation is
+            | offline.
             |
             | Therefore:
             |
@@ -681,6 +928,12 @@ const syncTelemetryForInstallation =
     };
 
 
+/*
+|--------------------------------------------------------------------------
+| Synchronize by VRM site ID
+|--------------------------------------------------------------------------
+*/
+
 const syncTelemetryByVrmSiteId =
     async (
         vrmSiteId,
@@ -689,7 +942,9 @@ const syncTelemetryByVrmSiteId =
         const installation =
             await Installation.findOne({
                 vrmSiteId:
-                    String(vrmSiteId),
+                    String(
+                        vrmSiteId
+                    ),
             });
 
         if (!installation) {
