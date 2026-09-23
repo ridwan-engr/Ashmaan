@@ -28,6 +28,10 @@ import {
     runWithConcurrency,
 } from "./syncJobRunner.js";
 
+import {
+    runSiteEnergyFinancialBi,
+} from "../financialBi/financialBiRuntimeService.js";
+
 
 const TELEMETRY_INTERVAL_MS =
     10 * 60 * 1000;
@@ -42,6 +46,9 @@ const STATISTICS_INTERVAL_MS =
     30 * 60 * 1000;
 
 const DEVICE_INTERVAL_MS =
+    6 * 60 * 60 * 1000;
+
+const FINANCIAL_BI_INTERVAL_MS =
     6 * 60 * 60 * 1000;
 
 
@@ -60,6 +67,7 @@ const jobLocks = {
     alarms: false,
     statistics: false,
     devices: false,
+    financialBi: false,
 };
 
 
@@ -370,6 +378,87 @@ const runStatisticsJob =
 
 /*
 |--------------------------------------------------------------------------
+| Financial / BI
+|--------------------------------------------------------------------------
+|
+| Builds month-to-date SITE_ENERGY_KWH KPIs from genuine daily
+| EnergyRecord observations.
+|
+| Reporting semantics:
+|
+|   [UTC month start, UTC today start)
+|
+| The current incomplete UTC day is deliberately excluded.
+| Persistence identity makes repeated execution for the same window
+| idempotent.
+|
+*/
+
+const runFinancialBiJob =
+    async () => {
+        const now =
+            new Date();
+
+        const start =
+            new Date(
+                Date.UTC(
+                    now.getUTCFullYear(),
+                    now.getUTCMonth(),
+                    1
+                )
+            );
+
+        const end =
+            new Date(
+                Date.UTC(
+                    now.getUTCFullYear(),
+                    now.getUTCMonth(),
+                    now.getUTCDate()
+                )
+            );
+
+        if (
+            end <= start
+        ) {
+            console.log(
+                "[VRM Scheduler] financialBi skipped: no completed UTC day in current month."
+            );
+
+            return {
+                total: 0,
+                successful: 0,
+                failed: 0,
+                results: [],
+            };
+        }
+
+        return runInstallationJob({
+            jobName:
+                "financialBi",
+
+            concurrency:
+                2,
+
+            delayBetweenStartsMs:
+                250,
+
+            worker:
+                async (
+                    vrmSiteId
+                ) => {
+                    return runSiteEnergyFinancialBi({
+                        vrmSiteId,
+                        start,
+                        end,
+                        timezone:
+                            "UTC",
+                    });
+                },
+        });
+    };
+
+/*
+|--------------------------------------------------------------------------
 | Devices
 |--------------------------------------------------------------------------
 */
@@ -452,13 +541,20 @@ const startVrmScheduler =
                 180 * 1000
             );
 
+        const financialBiStart =
+            setTimeout(
+                runFinancialBiJob,
+                5 * 60 * 1000
+            );
+
 
         schedulerHandles.push(
             telemetryStart,
             statusRefreshStart,
             alarmStart,
             statisticsStart,
-            deviceStart
+            deviceStart,
+            financialBiStart
         );
 
 
@@ -503,6 +599,12 @@ const startVrmScheduler =
             )
         );
 
+        schedulerHandles.push(
+            setInterval(
+                runFinancialBiJob,
+                FINANCIAL_BI_INTERVAL_MS
+            )
+        );
 
         console.log(
             "[VRM Scheduler] Scheduled:"
@@ -529,10 +631,13 @@ const startVrmScheduler =
         );
 
         console.log(
-            `[VRM Scheduler] Fleet batch size: ${
-                env.vrm.syncBatchSize ||
-                "ALL"
+            `[VRM Scheduler] Fleet batch size: ${env.vrm.syncBatchSize ||
+            "ALL"
             }`
+        );
+
+        console.log(
+            "  financial BI  : every 6 hours"
         );
     };
 
@@ -569,4 +674,5 @@ export {
     runAlarmJob,
     runStatisticsJob,
     runDeviceJob,
+    runFinancialBiJob,
 };
