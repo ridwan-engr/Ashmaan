@@ -9,6 +9,16 @@ import {
 }
     from "./financialBiApiContract.js";
 
+import {
+    authorizeFinancialBiRecord,
+    FINANCIAL_BI_AUTHORIZATION_STATUS,
+}
+    from "../security/financialBiRecordAuthorizationService.js";
+import {
+    resolveFinancialBiCollectionScope,
+    FINANCIAL_BI_COLLECTION_SCOPE_STATUS,
+}
+    from "../security/financialBiCollectionScopeService.js";
 
 export const FINANCIAL_BI_API_IMPLEMENTATION_PHASE =
     "10.10";
@@ -87,9 +97,9 @@ function validateRepository(
     if (
         !repository ||
         typeof repository.listKpis !==
-            "function" ||
+        "function" ||
         typeof repository.findByPersistenceKey !==
-            "function"
+        "function"
     ) {
         throw new Error(
             "FINANCIAL_BI_READ_REPOSITORY_REQUIRED"
@@ -104,7 +114,7 @@ function normalizeRecord(
     if (
         !record ||
         typeof record !==
-            "object"
+        "object"
     ) {
         return null;
     }
@@ -113,7 +123,7 @@ function normalizeRecord(
         id:
             record._id ===
                 undefined ||
-            record._id ===
+                record._id ===
                 null
                 ? null
                 : String(
@@ -166,22 +176,240 @@ function normalizeRecord(
 
 export async function listFinancialBiKpis({
     query = {},
+    userId = null,
     repository,
+
+    resolveCollectionScope =
+    resolveFinancialBiCollectionScope,
 } = {}) {
     validateRepository(
         repository
     );
+
+    if (
+        typeof resolveCollectionScope !==
+        "function"
+    ) {
+        throw new Error(
+            "FINANCIAL_BI_COLLECTION_SCOPE_RESOLVER_REQUIRED"
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Preserve the existing public query contract
+    |--------------------------------------------------------------------------
+    */
 
     const apiQuery =
         buildFinancialBiKpiListQuery(
             query
         );
 
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve row-level collection authorization
+    |--------------------------------------------------------------------------
+    */
+
+    let authorization;
+
+    try {
+        authorization =
+            await resolveCollectionScope({
+                userId,
+
+                requestedScope:
+                    apiQuery.filters
+                        .scope ??
+                    null,
+
+                requestedVrmSiteId:
+                    apiQuery.filters
+                        .vrmSiteId ??
+                    null,
+            });
+    } catch {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_AUTHORIZATION_UNAVAILABLE",
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | EMPTY
+    |--------------------------------------------------------------------------
+    |
+    | Empty entitlement is a successful empty collection.
+    |
+    | CRITICAL:
+    | repository.listKpis() must not execute.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization?.status ===
+        FINANCIAL_BI_COLLECTION_SCOPE_STATUS
+            .EMPTY
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .OK,
+
+            data:
+                Object.freeze({
+                    items:
+                        Object.freeze([]),
+                }),
+
+            meta:
+                Object.freeze({
+                    page:
+                        apiQuery.pagination
+                            .page,
+
+                    limit:
+                        apiQuery.pagination
+                            .limit,
+
+                    offset:
+                        apiQuery.pagination
+                            .offset,
+
+                    total:
+                        0,
+
+                    sort:
+                        apiQuery.sort,
+
+                    filters:
+                        apiQuery.filters,
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FORBIDDEN
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization?.status ===
+        FINANCIAL_BI_COLLECTION_SCOPE_STATUS
+            .FORBIDDEN
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .INVALID_REQUEST,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_ACCESS_DENIED",
+
+                    reason:
+                        authorization.reason ??
+                        null,
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | UNAVAILABLE / malformed authorization result
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization?.status !==
+        FINANCIAL_BI_COLLECTION_SCOPE_STATUS
+            .RESOLVED ||
+        !Array.isArray(
+            authorization
+                ?.authorizedVrmSiteIds
+        )
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_AUTHORIZATION_UNAVAILABLE",
+
+                    reason:
+                        authorization?.reason ??
+                        null,
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Defense against malformed RESOLVED + empty entitlement
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization
+            .authorizedVrmSiteIds
+            .length === 0
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_AUTHORIZATION_UNAVAILABLE",
+
+                    reason:
+                        "RESOLVED_SCOPE_EMPTY",
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Repository query
+    |--------------------------------------------------------------------------
+    |
+    | Public filters remain intact, while authorizedVrmSiteIds is injected
+    | as an internal repository-only security constraint.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const repositoryFilters =
+        Object.freeze({
+            ...apiQuery.filters,
+
+            authorizedVrmSiteIds:
+                authorization
+                    .authorizedVrmSiteIds,
+        });
+
     const result =
         await repository
             .listKpis({
                 filters:
-                    apiQuery.filters,
+                    repositoryFilters,
 
                 pagination:
                     apiQuery.pagination,
@@ -199,11 +427,12 @@ export async function listFinancialBiKpis({
             result.total
         ) ||
         result.total <
-            0
+        0
     ) {
         return buildFinancialBiApiEnvelope({
             status:
-                FINANCIAL_BI_API_RESPONSE_STATUS.UNAVAILABLE,
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
 
             error:
                 Object.freeze({
@@ -224,7 +453,8 @@ export async function listFinancialBiKpis({
 
     return buildFinancialBiApiEnvelope({
         status:
-            FINANCIAL_BI_API_RESPONSE_STATUS.OK,
+            FINANCIAL_BI_API_RESPONSE_STATUS
+                .OK,
 
         data:
             Object.freeze({
@@ -251,25 +481,52 @@ export async function listFinancialBiKpis({
                 sort:
                     apiQuery.sort,
 
+                /*
+                 * Keep meta.filters as the PUBLIC query
+                 * contract. Do not expose authorization
+                 * site sets in the API response.
+                 */
                 filters:
                     apiQuery.filters,
             }),
     });
 }
 
-
 export async function getFinancialBiKpiByPersistenceKey({
     persistenceKey,
+    userId = null,
     repository,
+    authorizeRecord =
+        authorizeFinancialBiRecord,
 } = {}) {
     validateRepository(
         repository
     );
 
+    if (
+        typeof authorizeRecord !==
+        "function"
+    ) {
+        throw new Error(
+            "FINANCIAL_BI_RECORD_AUTHORIZER_REQUIRED"
+        );
+    }
+
     const apiQuery =
         buildFinancialBiKpiByKeyQuery({
             persistenceKey,
         });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Opaque persistence-key lookup
+    |--------------------------------------------------------------------------
+    |
+    | persistenceKey does not contain an authoritative authorization identity.
+    | The record must therefore be resolved before SITE/FLEET authorization.
+    |
+    |--------------------------------------------------------------------------
+    */
 
     const record =
         await repository
@@ -280,13 +537,14 @@ export async function getFinancialBiKpiByPersistenceKey({
 
     if (
         record ===
-            null ||
+        null ||
         record ===
-            undefined
+        undefined
     ) {
         return buildFinancialBiApiEnvelope({
             status:
-                FINANCIAL_BI_API_RESPONSE_STATUS.NOT_FOUND,
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .NOT_FOUND,
 
             error:
                 Object.freeze({
@@ -299,6 +557,108 @@ export async function getFinancialBiKpiByPersistenceKey({
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Record authorization
+    |--------------------------------------------------------------------------
+    |
+    | No retrieved record may be normalized or returned before authorization.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    let authorization;
+
+    try {
+        authorization =
+            await authorizeRecord({
+                userId,
+
+                scope:
+                    record.scope,
+
+                scopeIdentity:
+                    record.scopeIdentity ??
+                    {},
+            });
+    } catch {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_AUTHORIZATION_UNAVAILABLE",
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FORBIDDEN
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization?.status ===
+        FINANCIAL_BI_AUTHORIZATION_STATUS
+            .FORBIDDEN
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .INVALID_REQUEST,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_ACCESS_DENIED",
+
+                    reason:
+                        authorization.reason ??
+                        null,
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | UNAVAILABLE / malformed authorization result
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        authorization?.status !==
+            FINANCIAL_BI_AUTHORIZATION_STATUS
+                .AUTHORIZED ||
+        authorization?.authorized !==
+            true
+    ) {
+        return buildFinancialBiApiEnvelope({
+            status:
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
+
+            error:
+                Object.freeze({
+                    code:
+                        "FINANCIAL_BI_AUTHORIZATION_UNAVAILABLE",
+
+                    reason:
+                        authorization?.reason ??
+                        null,
+                }),
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authorized response
+    |--------------------------------------------------------------------------
+    */
+
     const normalized =
         normalizeRecord(
             record
@@ -309,7 +669,8 @@ export async function getFinancialBiKpiByPersistenceKey({
     ) {
         return buildFinancialBiApiEnvelope({
             status:
-                FINANCIAL_BI_API_RESPONSE_STATUS.UNAVAILABLE,
+                FINANCIAL_BI_API_RESPONSE_STATUS
+                    .UNAVAILABLE,
 
             error:
                 Object.freeze({
@@ -321,7 +682,8 @@ export async function getFinancialBiKpiByPersistenceKey({
 
     return buildFinancialBiApiEnvelope({
         status:
-            FINANCIAL_BI_API_RESPONSE_STATUS.OK,
+            FINANCIAL_BI_API_RESPONSE_STATUS
+                .OK,
 
         data:
             normalized,

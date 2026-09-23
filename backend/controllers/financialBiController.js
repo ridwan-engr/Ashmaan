@@ -7,11 +7,18 @@ import {
     from "../services/financialBi/financialBiApiService.js";
 
 
-function httpStatusForEnvelope(
+export function httpStatusForEnvelope(
     envelope
 ) {
+    if (
+        envelope?.error?.code ===
+        "FINANCIAL_BI_ACCESS_DENIED"
+    ) {
+        return 403;
+    }
+
     switch (
-        envelope.status
+    envelope.status
     ) {
         case "OK":
             return 200;
@@ -48,11 +55,11 @@ function invalidRequestEnvelope(
             null,
 
         error:
-            {
-                code:
-                    error?.message ||
-                    "FINANCIAL_BI_INVALID_REQUEST",
-            },
+        {
+            code:
+                error?.message ||
+                "FINANCIAL_BI_INVALID_REQUEST",
+        },
 
         readOnly:
             true,
@@ -75,6 +82,10 @@ export function createFinancialBiController({
                             req.query ??
                             {},
 
+                        userId:
+                            req?.auth?.userId ??
+                            null,
+
                         repository,
                     });
 
@@ -88,7 +99,7 @@ export function createFinancialBiController({
                         envelope
                     );
             } catch (
-                error
+            error
             ) {
                 const envelope =
                     invalidRequestEnvelope(
@@ -115,6 +126,10 @@ export function createFinancialBiController({
                         persistenceKey:
                             req.params?.persistenceKey,
 
+                        userId:
+                            req?.auth?.userId ??
+                            null,
+
                         repository,
                     });
 
@@ -128,7 +143,7 @@ export function createFinancialBiController({
                         envelope
                     );
             } catch (
-                error
+            error
             ) {
                 const envelope =
                     invalidRequestEnvelope(
