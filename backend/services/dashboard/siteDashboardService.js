@@ -13,9 +13,31 @@ import AlarmRule
 import EnergyRecord
   from "../../models/EnergyRecord.js";
 
-const getDashboardSites = async () => {
+const getDashboardSites = async ({
+  installationIds,
+} = {}) => {
+  if (
+    !Array.isArray(
+      installationIds
+    )
+  ) {
+    throw new TypeError(
+      "installationIds scope is required."
+    );
+  }
+
+  if (
+    installationIds.length === 0
+  ) {
+    return [];
+  }
+
   const installations =
     await Installation.find({
+      _id: {
+        $in: installationIds,
+      },
+
       source: "VRM",
       syncEnabled: true,
     })
@@ -293,5 +315,5 @@ export default {
   getSiteOverview,
   getSiteTelemetry,
   getSiteEnergyHistory,
-  
+
 };

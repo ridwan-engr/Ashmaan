@@ -6,12 +6,20 @@ import {
   getInstallationTelemetry,
   getInstallationAlarms,
   getInstallationStatistics,
-  inspectInstallationTelemetry,
 } from "../controllers/vrmController.js";
 
 import asyncHandler from "../utils/asyncHandler.js";
 
+import requireInstallationAccess
+  from "../middleware/requireInstallationAccess.js";
+
 const router = express.Router();
+
+const requireVrmInstallationAccess =
+  requireInstallationAccess({
+    paramName: "id",
+    source: "params",
+  });
 
 router.get(
   "/installations",
@@ -20,27 +28,27 @@ router.get(
 
 router.get(
   "/installations/:id",
+  requireVrmInstallationAccess,
   asyncHandler(getInstallationById)
 );
 
 router.get(
   "/installations/:id/telemetry",
+  requireVrmInstallationAccess,
   asyncHandler(getInstallationTelemetry)
 );
 
 router.get(
   "/installations/:id/alarms",
+  requireVrmInstallationAccess,
   asyncHandler(getInstallationAlarms)
 );
 
 router.get(
   "/installations/:id/statistics",
+  requireVrmInstallationAccess,
   asyncHandler(getInstallationStatistics)
 );
 
-router.get(
-  "/installations/:id/diagnostic-sample",
-  asyncHandler(inspectInstallationTelemetry)
-);
 
 export default router;

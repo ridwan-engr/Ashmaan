@@ -5,6 +5,11 @@ import {
   getSiteTelemetrySnapshot,
 } from "../services/dashboard/siteTelemetrySnapshotService.js";
 
+import {
+  getUserInstallationScope,
+  USER_INSTALLATION_SCOPE_STATUS,
+} from "../services/security/userInstallationScopeService.js";
+
 const {
   getDashboardSites,
   getSiteOverview,
@@ -18,14 +23,54 @@ const getSites = async (
   next
 ) => {
   try {
+    const scope =
+      await getUserInstallationScope({
+        userId:
+          req?.auth?.userId,
+      });
+
+    if (
+      scope.status ===
+      USER_INSTALLATION_SCOPE_STATUS.DENY
+    ) {
+      return res.status(403).json({
+        error: {
+          code:
+            "INSTALLATION_ACCESS_DENIED",
+
+          message:
+            "Installation access denied.",
+        },
+      });
+    }
+
+    if (
+      scope.status !==
+      USER_INSTALLATION_SCOPE_STATUS.RESOLVED
+    ) {
+      return res.status(503).json({
+        error: {
+          code:
+            "INSTALLATION_AUTHORIZATION_UNAVAILABLE",
+
+          message:
+            "Installation authorization is temporarily unavailable.",
+        },
+      });
+    }
+
     const sites =
-      await getDashboardSites();
+      await getDashboardSites({
+        installationIds:
+          scope.installationIds,
+      });
 
     return res.status(200).json({
       success: true,
       data: sites,
     });
-  } catch (error) {
+  }
+  catch (error) {
     next(error);
   }
 };
@@ -128,11 +173,11 @@ const getEnergyHistory =
   };
 
 export async function
-getSiteTelemetrySnapshotController(
-  req,
-  res,
-  next
-) {
+  getSiteTelemetrySnapshotController(
+    req,
+    res,
+    next
+  ) {
   try {
     const result =
       await getSiteTelemetrySnapshot(

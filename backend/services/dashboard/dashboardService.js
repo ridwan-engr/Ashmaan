@@ -5,7 +5,74 @@ import AlarmRule from "../../models/AlarmRule.js";
 import EnergyRecord from "../../models/EnergyRecord.js";
 
 
-const getFleetOverview = async () => {
+function requireInstallationScope(
+  installationIds
+) {
+  if (
+    !Array.isArray(
+      installationIds
+    )
+  ) {
+    throw new TypeError(
+      "installationIds scope is required."
+    );
+  }
+
+  return installationIds;
+}
+
+
+function buildEmptyFleetOverview() {
+  return {
+    fleet: {
+      totalInstallations: 0,
+      activeInstallations: 0,
+      online: 0,
+      stale: 0,
+      offline: 0,
+      unknown: 0,
+      inactive: 0,
+      classifiedInstallations: 0,
+    },
+
+    devices: {
+      total: 0,
+    },
+
+    alarms: {
+      rules: 0,
+    },
+
+    telemetry: {
+      latestTimestamp: null,
+      latestRecord: null,
+    },
+
+    energy: {
+      latestTimestamp: null,
+      latestRecord: null,
+    },
+  };
+}
+
+
+const getFleetOverview = async ({
+  installationIds,
+} = {}) => {
+  requireInstallationScope(
+    installationIds
+  );
+
+  if (
+    installationIds.length === 0
+  ) {
+    return buildEmptyFleetOverview();
+  }
+
+  const installationScope = {
+    $in: installationIds,
+  };
+
   const [
     totalInstallations,
 
@@ -22,10 +89,11 @@ const getFleetOverview = async () => {
     latestEnergyRecord,
   ] = await Promise.all([
     /*
-     * All VRM installations,
+     * All entitled VRM installations,
      * including inactive/disabled records.
      */
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
     }),
 
@@ -33,56 +101,67 @@ const getFleetOverview = async () => {
      * Monitoring status counts.
      */
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
       status: "ONLINE",
       syncEnabled: true,
     }),
 
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
       status: "STALE",
       syncEnabled: true,
     }),
 
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
       status: "OFFLINE",
       syncEnabled: true,
     }),
 
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
       status: "UNKNOWN",
       syncEnabled: true,
     }),
 
     Installation.countDocuments({
+      _id: installationScope,
       source: "VRM",
       status: "INACTIVE",
     }),
 
     /*
-     * Fleet device count.
+     * Entitled fleet device count.
      */
     Device.countDocuments({
+      installation:
+        installationScope,
       source: "VRM",
     }),
 
     /*
-     * VRM alarm-rule configuration count.
+     * Entitled VRM alarm-rule configuration count.
      *
      * These are alarm rules/configurations,
      * not historical alarm events.
      */
     AlarmRule.countDocuments({
+      installation:
+        installationScope,
       source: "VRM",
     }),
 
     /*
      * Most recent telemetry record
-     * across the VRM fleet.
+     * across the entitled VRM fleet.
      */
     Telemetry.findOne({
+      installation:
+        installationScope,
       source: "VRM",
     })
       .sort({
@@ -99,9 +178,12 @@ const getFleetOverview = async () => {
       .lean(),
 
     /*
-     * Most recent stored energy record.
+     * Most recent stored energy record
+     * across the entitled VRM fleet.
      */
     EnergyRecord.findOne({
+      installation:
+        installationScope,
       source: "VRM",
     })
       .sort({
@@ -113,7 +195,7 @@ const getFleetOverview = async () => {
 
   /*
    * Eligible/active installations are all
-   * VRM installations except INACTIVE.
+   * entitled VRM installations except INACTIVE.
    *
    * Monitoring status may be:
    * ONLINE / STALE / OFFLINE / UNKNOWN.
@@ -193,7 +275,12 @@ const getFleetOverview = async () => {
 const getEnergyTrend = async ({
   days = 7,
   metric = "kwh",
+  installationIds,
 } = {}) => {
+  requireInstallationScope(
+    installationIds
+  );
+
   const safeDays =
     Math.min(
       Math.max(
@@ -216,8 +303,29 @@ const getEnergyTrend = async ({
           1000
     );
 
+  if (
+    installationIds.length === 0
+  ) {
+    return {
+      metric,
+      days:
+        safeDays,
+
+      startTime,
+      endTime,
+
+      count: 0,
+      records: [],
+    };
+  }
+
   const records =
     await EnergyRecord.find({
+      installation: {
+        $in:
+          installationIds,
+      },
+
       source: "VRM",
 
       metric,
