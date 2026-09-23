@@ -20,32 +20,161 @@ const SORT_FIELD_MAP =
     });
 
 
-function buildMongoFilter(
-    filters
+function normalizeAuthorizedVrmSiteIds(
+    values
+) {
+    if (!Array.isArray(values)) {
+        return null;
+    }
+
+    return [
+        ...new Set(
+            values
+                .map(
+                    (value) =>
+                        typeof value ===
+                        "string"
+                            ? value.trim()
+                            : ""
+                )
+                .filter(Boolean)
+        ),
+    ];
+}
+
+export function buildMongoFilter(
+    filters = {}
 ) {
     const mongo =
         {};
 
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization-enforced multi-site scope
+    |--------------------------------------------------------------------------
+    |
+    | authorizedVrmSiteIds is an INTERNAL security constraint.
+    |
+    | Its presence means:
+    |
+    |   - Financial/BI scope is SITE only
+    |   - repository access is restricted to this exact set
+    |   - [] must match nothing
+    |
+    | It must never degrade into an unrestricted query.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const authorizedVrmSiteIds =
+        normalizeAuthorizedVrmSiteIds(
+            filters
+                .authorizedVrmSiteIds
+        );
+
     if (
-        filters.scope
+        authorizedVrmSiteIds !== null
     ) {
+        /*
+         * Authorization scope overrides any broader domain
+         * scope supplied by the caller.
+         */
         mongo.scope =
-            filters.scope;
+            "SITE";
+
+        /*
+         * Explicit scalar SITE request must intersect with
+         * the authorization set.
+         */
+        if (
+            filters.vrmSiteId
+        ) {
+            const requestedVrmSiteId =
+                String(
+                    filters.vrmSiteId
+                ).trim();
+
+            if (
+                requestedVrmSiteId &&
+                authorizedVrmSiteIds
+                    .includes(
+                        requestedVrmSiteId
+                    )
+            ) {
+                mongo[
+                    "scopeIdentity.vrmSiteId"
+                ] =
+                    requestedVrmSiteId;
+            } else {
+                /*
+                 * Deliberately impossible match.
+                 *
+                 * This preserves the ACL constraint rather
+                 * than allowing an unauthorized scalar site
+                 * to broaden or replace it.
+                 */
+                mongo[
+                    "scopeIdentity.vrmSiteId"
+                ] = {
+                    $in: [],
+                };
+            }
+        } else {
+            /*
+             * [] is intentionally retained as $in: [].
+             *
+             * It matches no records and can never become an
+             * unrestricted Financial/BI collection query.
+             */
+            mongo[
+                "scopeIdentity.vrmSiteId"
+            ] = {
+                $in:
+                    authorizedVrmSiteIds,
+            };
+        }
+    } else {
+        /*
+        |--------------------------------------------------------------------------
+        | Existing domain query behavior
+        |--------------------------------------------------------------------------
+        |
+        | Preserve the pre-D3 repository contract for non-ACL callers.
+        |
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            filters.scope
+        ) {
+            mongo.scope =
+                filters.scope;
+        }
+
+        if (
+            filters.vrmSiteId
+        ) {
+            mongo[
+                "scopeIdentity.vrmSiteId"
+            ] =
+                filters.vrmSiteId;
+        }
+
+        if (
+            filters.fleetId
+        ) {
+            mongo[
+                "scopeIdentity.fleetId"
+            ] =
+                filters.fleetId;
+        }
     }
 
-    if (
-        filters.vrmSiteId
-    ) {
-        mongo["scopeIdentity.vrmSiteId"] =
-            filters.vrmSiteId;
-    }
-
-    if (
-        filters.fleetId
-    ) {
-        mongo["scopeIdentity.fleetId"] =
-            filters.fleetId;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Existing non-identity filters
+    |--------------------------------------------------------------------------
+    */
 
     if (
         filters.metricName
@@ -57,7 +186,9 @@ function buildMongoFilter(
     if (
         filters.timezone
     ) {
-        mongo["reportingWindow.timezone"] =
+        mongo[
+            "reportingWindow.timezone"
+        ] =
             filters.timezone;
     }
 
@@ -65,25 +196,33 @@ function buildMongoFilter(
         filters.reportingStart ||
         filters.reportingEnd
     ) {
-        mongo["reportingWindow.start"] =
+        mongo[
+            "reportingWindow.start"
+        ] =
             {};
 
         if (
             filters.reportingStart
         ) {
-            mongo["reportingWindow.start"].$gte =
+            mongo[
+                "reportingWindow.start"
+            ].$gte =
                 filters.reportingStart;
         }
 
         if (
             filters.reportingEnd
         ) {
-            mongo["reportingWindow.start"].$lt =
+            mongo[
+                "reportingWindow.start"
+            ].$lt =
                 filters.reportingEnd;
         }
     }
 
-    mongo["reportingWindow.semantics"] =
+    mongo[
+        "reportingWindow.semantics"
+    ] =
         "[start,end)";
 
     return mongo;
