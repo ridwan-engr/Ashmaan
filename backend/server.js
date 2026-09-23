@@ -18,6 +18,19 @@ import reliabilityRoutes
 import optimizationDssRoutes
   from "./routes/optimizationDssRoutes.js";
 
+import authenticatePortalAccessToken
+  from "./middleware/authenticatePortalAccessToken.js";
+
+import requireActivePortalSession
+  from "./middleware/requireActivePortalSession.js";
+
+import requirePortalPermission
+  from "./middleware/requirePortalPermission.js";
+
+import {
+  RBAC_PERMISSIONS,
+} from "./services/security/authorizationRbacService.js";
+
 import notFound
   from "./middleware/notFound.js";
 import errorHandler
@@ -242,26 +255,78 @@ app.use(
 );
 
 
+/*
+|--------------------------------------------------------------------------
+| Portal dashboard authorization
+|--------------------------------------------------------------------------
+|
+| Dashboard, site-dashboard, and reliability read surfaces require:
+|
+| 1. Valid portal ACCESS token
+| 2. Active persistent portal session
+| 3. Explicit READ_DASHBOARD permission
+|
+| This authorization boundary does not grant equipment control or
+| automatic dispatch.
+|
+|--------------------------------------------------------------------------
+*/
+
+const requireDashboardRead =
+  requirePortalPermission(
+    RBAC_PERMISSIONS.READ_DASHBOARD
+  );
+
+const requireOptimizationDssRead =
+  requirePortalPermission(
+    RBAC_PERMISSIONS.READ_OPTIMIZATION_DSS
+  );
+
+
 app.use(
   "/api/v1/dashboard",
+  authenticatePortalAccessToken,
+  requireActivePortalSession,
+  requireDashboardRead,
   dashboardRoutes
 );
 
 
 app.use(
   "/api/v1/dashboard/sites",
+  authenticatePortalAccessToken,
+  requireActivePortalSession,
+  requireDashboardRead,
   siteDashboardRoutes
 );
 
 
 app.use(
   "/api/v1/reliability",
+  authenticatePortalAccessToken,
+  requireActivePortalSession,
+  requireDashboardRead,
   reliabilityRoutes
 );
 
 
+/*
+|--------------------------------------------------------------------------
+| Legacy Optimization/DSS route
+|--------------------------------------------------------------------------
+|
+| This existing legacy route is intentionally preserved at this gate.
+| Its authorization/bypass treatment belongs to the dedicated legacy-route
+| security gate rather than P.1G-C.
+|
+|--------------------------------------------------------------------------
+*/
+
 app.use(
   "/api/optimization-dss",
+  authenticatePortalAccessToken,
+  requireActivePortalSession,
+  requireOptimizationDssRead,
   optimizationDssRoutes
 );
 
@@ -568,7 +633,6 @@ const startServer =
         | 1. Stop future scheduler work
         |--------------------------------------------------------------------------
         */
-
 
         try {
           stopVrmScheduler();

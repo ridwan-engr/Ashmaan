@@ -13,9 +13,31 @@ import syncRoutes
 import backendApiIntegrationRoutes
     from "./backendApiIntegrationRoutes.js";
 
+import portalAuthRoutes
+    from "./portalAuthRoutes.js";
+
+import authenticatePortalAccessToken
+    from "../middleware/authenticatePortalAccessToken.js";
+
+import requireActivePortalSession
+    from "../middleware/requireActivePortalSession.js";
+
+import requirePortalPermission
+    from "../middleware/requirePortalPermission.js";
+
+import {
+    RBAC_PERMISSIONS,
+}
+    from "../services/security/authorizationRbacService.js";
+
 
 const router =
     express.Router();
+
+const requireDashboardRead =
+    requirePortalPermission(
+        RBAC_PERMISSIONS.READ_DASHBOARD
+    );
 
 
 router.use(
@@ -25,12 +47,20 @@ router.use(
 
 router.use(
     "/vrm",
+    authenticatePortalAccessToken,
+    requireActivePortalSession,
+    requireDashboardRead,
     vrmRoutes
 );
 
 router.use(
     "/sync",
     syncRoutes
+);
+
+router.use(
+    "/auth",
+    portalAuthRoutes
 );
 
 

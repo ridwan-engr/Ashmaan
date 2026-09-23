@@ -17,6 +17,11 @@ import {
     from "./engineeringAnalyticsRoutes.js";
 
 import {
+    createProductionEngineeringHttpProvider,
+}
+    from "../services/engineering/productionEngineeringHttpProvider.js";
+
+import {
     createForecastingApiService,
 }
     from "../services/forecasting/forecastingApiService.js";
@@ -39,11 +44,25 @@ import {
 import optimizationDssRoutes
     from "./optimizationDssRoutes.js";
 
+import authenticatePortalAccessToken
+    from "../middleware/authenticatePortalAccessToken.js";
+
+import requireActivePortalSession
+    from "../middleware/requireActivePortalSession.js";
+
+import requirePortalPermission
+    from "../middleware/requirePortalPermission.js";
+
+import {
+    RBAC_PERMISSIONS,
+}
+    from "../services/security/authorizationRbacService.js";
+
 
 /*
 |--------------------------------------------------------------------------
 | ASHMAAN
-| Phase 12.8 — Backend API Integration
+| Phase 12.8 - Backend API Integration
 |--------------------------------------------------------------------------
 |
 | PURPOSE
@@ -275,7 +294,7 @@ function requireRouter(
 
 export function createBackendApiIntegrationRouter({
     engineeringAggregateProvider =
-        createUnavailableEngineeringAggregateProvider(),
+        createProductionEngineeringHttpProvider(),
 
     ForecastRecordModel =
         ForecastRecord,
@@ -303,6 +322,15 @@ export function createBackendApiIntegrationRouter({
 
     optimizationRouter =
         optimizationDssRoutes,
+
+    authenticate =
+        authenticatePortalAccessToken,
+
+    requireActiveSession =
+        requireActivePortalSession,
+
+    requirePermission =
+        requirePortalPermission,
 } = {}) {
     requireFunction(
         routerFactory,
@@ -348,6 +376,22 @@ export function createBackendApiIntegrationRouter({
         optimizationRouter,
         "OPTIMIZATION_DSS_ROUTER"
     );
+
+    requireFunction(
+        authenticate,
+        "PORTAL_ACCESS_AUTHENTICATION"
+    );
+
+    requireFunction(
+        requireActiveSession,
+        "PORTAL_ACTIVE_SESSION"
+    );
+
+    requireFunction(
+        requirePermission,
+        "PORTAL_PERMISSION_AUTHORIZATION"
+    );
+
 
     const router =
         routerFactory();
@@ -418,31 +462,110 @@ export function createBackendApiIntegrationRouter({
 
     /*
     |--------------------------------------------------------------------------
+    | Portal authorization boundaries
+    |--------------------------------------------------------------------------
+    |
+    | Authentication, active-session validation, and explicit Phase 13.4
+    | permission authorization are enforced at the parent integration
+    | boundary before requests reach the existing read-only API routers.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const requireEngineeringRead =
+        requirePermission(
+            RBAC_PERMISSIONS
+                .READ_ENGINEERING_ANALYTICS
+        );
+
+    const requireForecastingRead =
+        requirePermission(
+            RBAC_PERMISSIONS
+                .READ_FORECASTING
+        );
+
+    const requireFinancialBiRead =
+        requirePermission(
+            RBAC_PERMISSIONS
+                .READ_FINANCIAL_BI
+        );
+
+    const requireOptimizationDssRead =
+        requirePermission(
+            RBAC_PERMISSIONS
+                .READ_OPTIMIZATION_DSS
+        );
+
+
+    requireFunction(
+        requireEngineeringRead,
+        "ENGINEERING_PERMISSION_MIDDLEWARE"
+    );
+
+    requireFunction(
+        requireForecastingRead,
+        "FORECASTING_PERMISSION_MIDDLEWARE"
+    );
+
+    requireFunction(
+        requireFinancialBiRead,
+        "FINANCIAL_BI_PERMISSION_MIDDLEWARE"
+    );
+
+    requireFunction(
+        requireOptimizationDssRead,
+        "OPTIMIZATION_DSS_PERMISSION_MIDDLEWARE"
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
     | Mount existing API layers
+    |--------------------------------------------------------------------------
+    |
+    | Canonical security order:
+    |
+    | ACCESS authentication
+    |     -> active persistent session
+    |     -> explicit route-family permission
+    |     -> existing read-only API router
+    |
     |--------------------------------------------------------------------------
     */
 
     router.use(
         BACKEND_API_INTEGRATION_PATHS
             .ENGINEERING_ANALYTICS,
+        authenticate,
+        requireActiveSession,
+        requireEngineeringRead,
         engineeringRouter
     );
 
     router.use(
         BACKEND_API_INTEGRATION_PATHS
             .FORECASTING,
+        authenticate,
+        requireActiveSession,
+        requireForecastingRead,
         forecastingRouter
     );
 
     router.use(
         BACKEND_API_INTEGRATION_PATHS
             .FINANCIAL_BI,
+        authenticate,
+        requireActiveSession,
+        requireFinancialBiRead,
         financialBiRouter
     );
 
     router.use(
         BACKEND_API_INTEGRATION_PATHS
             .OPTIMIZATION_DSS,
+        authenticate,
+        requireActiveSession,
+        requireOptimizationDssRead,
         optimizationRouter
     );
 
@@ -456,3 +579,4 @@ const backendApiIntegrationRoutes =
 
 
 export default backendApiIntegrationRoutes;
+
