@@ -110,9 +110,13 @@ const env = {
   jwtSecret:
     process.env.JWT_SECRET,
 
-  jwtExpiresIn:
-    process.env.JWT_EXPIRES_IN ||
-    "1d",
+  jwtIssuer:
+    process.env.JWT_ISSUER ||
+    "ashmaan-api",
+
+  jwtAudience:
+    process.env.JWT_AUDIENCE ||
+    "ashmaan-portal",
 
 
   // Frontend / CORS
