@@ -118,6 +118,45 @@ function positiveInteger(
 }
 
 
+function normalizeAllowedVrmSiteIds(
+    allowedVrmSiteIds
+) {
+    if (
+        allowedVrmSiteIds ===
+            undefined
+    ) {
+        return undefined;
+    }
+
+    if (
+        !Array.isArray(
+            allowedVrmSiteIds
+        )
+    ) {
+        throw new TypeError(
+            "ALLOWED_VRM_SITE_IDS_ARRAY_REQUIRED"
+        );
+    }
+
+    return [
+        ...new Set(
+            allowedVrmSiteIds
+                .map(
+                    (vrmSiteId) =>
+                        String(
+                            vrmSiteId
+                        ).trim()
+                )
+                .filter(
+                    (vrmSiteId) =>
+                        vrmSiteId !==
+                        ""
+                )
+        ),
+    ];
+}
+
+
 function queryToPlain(
     query
 ) {
@@ -214,6 +253,7 @@ export function createForecastingApiService({
 
         async listForecasts({
             vrmSiteId = null,
+            allowedVrmSiteIds = undefined,
             targetFamily = null,
             targetMetric = null,
             modelFamily = null,
@@ -239,16 +279,57 @@ export function createForecastingApiService({
             const filter =
                 {};
 
+            const normalizedAllowedVrmSiteIds =
+                normalizeAllowedVrmSiteIds(
+                    allowedVrmSiteIds
+                );
+
             if (
                 vrmSiteId !==
                     null
             ) {
-                filter[
-                    "identity.vrmSiteId"
-                ] =
+                const normalizedVrmSiteId =
                     String(
                         vrmSiteId
                     );
+
+                if (
+                    normalizedAllowedVrmSiteIds ===
+                        undefined
+                ) {
+                    filter[
+                        "identity.vrmSiteId"
+                    ] =
+                        normalizedVrmSiteId;
+                }
+                else {
+                    filter[
+                        "identity.vrmSiteId"
+                    ] =
+                        {
+                            $in:
+                                normalizedAllowedVrmSiteIds
+                                    .filter(
+                                        (
+                                            allowedVrmSiteId
+                                        ) =>
+                                            allowedVrmSiteId ===
+                                            normalizedVrmSiteId
+                                    ),
+                        };
+                }
+            }
+            else if (
+                normalizedAllowedVrmSiteIds !==
+                    undefined
+            ) {
+                filter[
+                    "identity.vrmSiteId"
+                ] =
+                    {
+                        $in:
+                            normalizedAllowedVrmSiteIds,
+                    };
             }
 
             if (

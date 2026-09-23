@@ -4,6 +4,9 @@ import {
     Router,
 } from "express";
 
+import requireInstallationAccess
+    from "../middleware/requireInstallationAccess.js";
+
 
 export const FORECASTING_ROUTE_PATHS =
     Object.freeze({
@@ -30,6 +33,13 @@ export const FORECASTING_ROUTE_PATHS =
 export function createForecastingRouter({
     controller,
     authenticate = null,
+    requireSiteAccess =
+        requireInstallationAccess({
+            paramName:
+                "vrmSiteId",
+            source:
+                "params",
+        }),
     routerFactory =
         Router,
 } = {}) {
@@ -40,6 +50,15 @@ export function createForecastingRouter({
     ) {
         throw new Error(
             "FORECASTING_CONTROLLER_REQUIRED"
+        );
+    }
+
+    if (
+        typeof requireSiteAccess !==
+            "function"
+    ) {
+        throw new Error(
+            "FORECASTING_SITE_ACCESS_REQUIRED"
         );
     }
 
@@ -76,11 +95,13 @@ export function createForecastingRouter({
 
     router.get(
         FORECASTING_ROUTE_PATHS.siteForecasts,
+        requireSiteAccess,
         controller.listSiteForecasts
     );
 
     router.get(
         FORECASTING_ROUTE_PATHS.latestSiteTargetForecast,
+        requireSiteAccess,
         controller.getLatestSiteTargetForecast
     );
 

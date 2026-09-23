@@ -4,9 +4,29 @@ import {
     FORECASTING_API_PHASE,
 } from "../services/forecasting/forecastingApiService.js";
 
+import {
+    USER_INSTALLATION_SCOPE_STATUS,
+    getUserInstallationScope,
+} from "../services/security/userInstallationScopeService.js";
+
+import {
+    getEntitledVrmSiteIds,
+} from "../services/security/vrmInstallationCollectionScopeService.js";
+
+import {
+    FORECAST_RECORD_AUTHORIZATION_DECISIONS,
+    authorizeForecastRecord,
+} from "../services/security/forecastRecordAuthorizationService.js";
+
 
 export function createForecastingController({
     forecastingApiService,
+    getInstallationScope =
+        getUserInstallationScope,
+    getVrmSiteIds =
+        getEntitledVrmSiteIds,
+    authorizeRecord =
+        authorizeForecastRecord,
 } = {}) {
     if (
         !forecastingApiService ||
@@ -15,6 +35,33 @@ export function createForecastingController({
     ) {
         throw new Error(
             "FORECASTING_API_SERVICE_REQUIRED"
+        );
+    }
+
+    if (
+        typeof getInstallationScope !==
+            "function"
+    ) {
+        throw new Error(
+            "FORECASTING_INSTALLATION_SCOPE_REQUIRED"
+        );
+    }
+
+    if (
+        typeof getVrmSiteIds !==
+            "function"
+    ) {
+        throw new Error(
+            "FORECASTING_VRM_SITE_SCOPE_REQUIRED"
+        );
+    }
+
+    if (
+        typeof authorizeRecord !==
+            "function"
+    ) {
+        throw new Error(
+            "FORECASTING_RECORD_AUTHORIZATION_REQUIRED"
         );
     }
 
@@ -74,12 +121,66 @@ export function createForecastingController({
             res
         ) {
             try {
+                const userId =
+                    req?.auth?.userId;
+
+                const scope =
+                    await getInstallationScope({
+                        userId,
+                    });
+
+                if (
+                    scope?.status !==
+                        USER_INSTALLATION_SCOPE_STATUS.RESOLVED ||
+                    !Array.isArray(
+                        scope?.installationIds
+                    )
+                ) {
+                    const status =
+                        scope?.status ===
+                            USER_INSTALLATION_SCOPE_STATUS.DENY
+                            ? 403
+                            : 503;
+
+                    return sendError(
+                        res,
+                        new Error(
+                            status === 403
+                                ? "FORECASTING_SITE_SCOPE_DENIED"
+                                : "FORECASTING_SITE_SCOPE_UNAVAILABLE"
+                        ),
+                        status
+                    );
+                }
+
+                const allowedVrmSiteIds =
+                    await getVrmSiteIds({
+                        installationIds:
+                            scope.installationIds,
+                    });
+
+                if (
+                    !Array.isArray(
+                        allowedVrmSiteIds
+                    )
+                ) {
+                    return sendError(
+                        res,
+                        new Error(
+                            "FORECASTING_SITE_SCOPE_UNAVAILABLE"
+                        ),
+                        503
+                    );
+                }
+
                 const result =
                     await forecastingApiService.listForecasts(
                         {
                             vrmSiteId:
                                 req.query?.vrmSiteId ??
                                 null,
+
+                            allowedVrmSiteIds,
 
                             targetFamily:
                                 req.query?.targetFamily ??
@@ -116,7 +217,8 @@ export function createForecastingController({
             ) {
                 return sendError(
                     res,
-                    error
+                    error,
+                    503
                 );
             }
         },
@@ -154,6 +256,39 @@ export function createForecastingController({
                                     },
                             }
                         );
+                }
+
+                const authorization =
+                    await authorizeRecord({
+                        userId:
+                            req.auth?.userId,
+                        record,
+                    });
+
+                if (
+                    authorization?.decision ===
+                    FORECAST_RECORD_AUTHORIZATION_DECISIONS.UNAVAILABLE
+                ) {
+                    return sendError(
+                        res,
+                        new Error(
+                            "FORECAST_AUTHORIZATION_UNAVAILABLE"
+                        ),
+                        503
+                    );
+                }
+
+                if (
+                    authorization?.decision !==
+                    FORECAST_RECORD_AUTHORIZATION_DECISIONS.ALLOW
+                ) {
+                    return sendError(
+                        res,
+                        new Error(
+                            "FORECAST_ACCESS_DENIED"
+                        ),
+                        403
+                    );
                 }
 
                 return res.json(
@@ -203,6 +338,39 @@ export function createForecastingController({
                                     },
                             }
                         );
+                }
+
+                const authorization =
+                    await authorizeRecord({
+                        userId:
+                            req.auth?.userId,
+                        record,
+                    });
+
+                if (
+                    authorization?.decision ===
+                    FORECAST_RECORD_AUTHORIZATION_DECISIONS.UNAVAILABLE
+                ) {
+                    return sendError(
+                        res,
+                        new Error(
+                            "FORECAST_AUTHORIZATION_UNAVAILABLE"
+                        ),
+                        503
+                    );
+                }
+
+                if (
+                    authorization?.decision !==
+                    FORECAST_RECORD_AUTHORIZATION_DECISIONS.ALLOW
+                ) {
+                    return sendError(
+                        res,
+                        new Error(
+                            "FORECAST_ACCESS_DENIED"
+                        ),
+                        403
+                    );
                 }
 
                 return res.json(
