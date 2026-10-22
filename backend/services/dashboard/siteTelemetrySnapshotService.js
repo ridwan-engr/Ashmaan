@@ -22,9 +22,9 @@ function normalizeSiteId(
 
 
 export async function
-getSiteTelemetrySnapshot(
-  vrmSiteId
-) {
+  getSiteTelemetrySnapshot(
+    vrmSiteId
+  ) {
   const normalizedSiteId =
     normalizeSiteId(
       vrmSiteId
@@ -83,16 +83,8 @@ getSiteTelemetrySnapshot(
     await Telemetry.aggregate([
       {
         $match: {
-          installation:
-            installation._id,
-
-          vrmAttributeId: {
-            $ne: null,
-          },
-
-          numericValue: {
-            $ne: null,
-          },
+          installation: installation._id,
+          vrmAttributeId: { $ne: null },
         },
       },
 
@@ -173,6 +165,17 @@ getSiteTelemetrySnapshot(
           dbusPath: 1,
 
           createdAt: 1,
+
+          source: 1,
+
+          aggregationLevel: 1,
+
+          dbusServiceType: 1,
+
+          dbusPath: 1,
+
+          formatWithUnit: 1,
+
         },
       },
     ]);
@@ -188,8 +191,8 @@ getSiteTelemetrySnapshot(
     const timestamp =
       record?.timestamp
         ? new Date(
-            record.timestamp
-          )
+          record.timestamp
+        )
         : null;
 
     if (
@@ -200,7 +203,7 @@ getSiteTelemetrySnapshot(
       (
         latestTimestamp === null ||
         timestamp >
-          latestTimestamp
+        latestTimestamp
       )
     ) {
       latestTimestamp =

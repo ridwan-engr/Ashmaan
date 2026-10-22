@@ -5,8 +5,15 @@ import env from "../config/env.js";
 import authenticateSocket
     from "./authenticateSocket.js";
 
-import Installation
-    from "../models/Installation.js";
+import {
+    INSTALLATION_RESOURCE_RESOLUTION,
+    resolveInstallationByVrmSiteId,
+} from "../services/security/installationResourceResolver.js";
+
+import {
+    SITE_RESOURCE_AUTHORIZATION_DECISIONS,
+    authorizeSiteResource,
+} from "../services/security/siteResourceAuthorizationService.js";
 
 let io = null;
 
@@ -129,146 +136,196 @@ const initializeSocketServer = (
             |--------------------------------------------------------------------------
             */
 
+            
             socket.on(
                 "site:subscribe",
                 async (
                     payload = {},
                     acknowledgement
                 ) => {
-                    const acknowledge =
-                        (
-                            result
-                        ) => {
-                            if (
-                                typeof acknowledgement ===
-                                "function"
-                            ) {
-                                acknowledgement(
-                                    result
-                                );
-                            }
-                        };
+                    const acknowledge = (result) => {
+                        if (
+                            typeof acknowledgement === "function"
+                        ) {
+                            acknowledgement(result);
+                        }
+                    };
 
 
                     try {
+                        // 1. Require an authenticated socket.
                         if (
-                            socket.data.auth
-                                ?.authenticated !==
-                            true
+                            socket.data.auth?.authenticated !== true
                         ) {
                             acknowledge({
                                 success: false,
-                                code:
-                                    "AUTHENTICATION_REQUIRED",
-                                error:
-                                    "Authentication is required.",
+                                code: "AUTHENTICATION_REQUIRED",
+                                error: "Authentication is required.",
                             });
 
                             return;
                         }
 
+                        const userId =
+                            socket.data.auth?.identity?.id;
 
-                        const vrmSiteId =
-                            normalizeVrmSiteId(
-                                payload.vrmSiteId
-                            );
+                        if (
+                            typeof userId !== "string" ||
+                            userId.trim() === ""
+                        ) {
+                            acknowledge({
+                                success: false,
+                                code: "AUTHENTICATION_REQUIRED",
+                                error: "Authentication is required.",
+                            });
+
+                            return;
+                        }
+
+                        // 2. Validate the requested VRM site ID.
+                        const vrmSiteId = normalizeVrmSiteId(
+                            payload.vrmSiteId
+                        );
 
 
                         if (!vrmSiteId) {
                             acknowledge({
                                 success: false,
-                                code:
-                                    "INVALID_SITE_ID",
-                                error:
-                                    "A valid VRM site ID is required.",
+                                code: "INVALID_SITE_ID",
+                                error: "A valid VRM site ID is required.",
                             });
 
                             return;
                         }
 
+                        // 3. Resolve VRM site ID to the canonical
+                        //    ASHMAAN installation resource.
+                        const resolution =
+                            await resolveInstallationByVrmSiteId({
+                                vrmSiteId,
+                            });
 
-                        /*
-                        |--------------------------------------------------------------------------
-                        | Installation existence
-                        |--------------------------------------------------------------------------
-                        |
-                        | This establishes that the requested VRM installation belongs to the
-                        | ASHMAAN installation inventory.
-                        |
-                        | It is NOT yet user-to-site ACL authorization.
-                        |
-                        */
-
-                        const installation =
-                            await Installation
-                                .findOne({
-                                    vrmSiteId:
-                                        Number(
-                                            vrmSiteId
-                                        ),
-                                })
-                                .select({
-                                    _id: 1,
-                                    vrmSiteId: 1,
-                                    status: 1,
-                                    source: 1,
-                                })
-                                .lean();
-
-
-                        if (!installation) {
+                        if (
+                            resolution?.status ===
+                            INSTALLATION_RESOURCE_RESOLUTION.INVALID
+                        ) {
                             acknowledge({
                                 success: false,
-                                code:
-                                    "SITE_NOT_FOUND",
-                                error:
-                                    "Installation was not found.",
+                                code: "INVALID_SITE_ID",
+                                error: "A valid VRM site ID is required.",
                             });
 
                             return;
                         }
 
+                        if (
+                            resolution?.status ===
+                            INSTALLATION_RESOURCE_RESOLUTION.NOT_FOUND
+                        ) {
+                            acknowledge({
+                                success: false,
+                                code: "SITE_NOT_FOUND",
+                                error: "Installation was not found.",
+                            });
 
-                        const room =
-                            getSiteRoomName(
-                                vrmSiteId
-                            );
+                            return;
+                        }
 
+                        if (
+                            resolution?.status !==
+                                INSTALLATION_RESOURCE_RESOLUTION.RESOLVED ||
+                            !resolution?.installationId
+                        ) {
+                            acknowledge({
+                                success: false,
+                                code: "INSTALLATION_AUTHORIZATION_UNAVAILABLE",
+                                error:
+                                    "Installation authorization is temporarily unavailable.",
+                            });
 
-                        await socket.join(
-                            room
-                        );
+                            return;
+                        }
 
+                        // 4. Enforce explicit user-to-installation ACL.
+                        const authorization =
+                            await authorizeSiteResource({
+                                userId,
+                                installationId:
+                                    resolution.installationId,
+                            });
+
+                        if (
+                            authorization?.decision ===
+                            SITE_RESOURCE_AUTHORIZATION_DECISIONS.DENY
+                        ) {
+                            acknowledge({
+                                success: false,
+                                code: "INSTALLATION_ACCESS_DENIED",
+                                error: "Installation access denied.",
+                            });
+
+                            return;
+                        }
+
+                        // Unknown or unavailable decisions must fail closed.
+                        if (
+                            authorization?.decision !==
+                                SITE_RESOURCE_AUTHORIZATION_DECISIONS.ALLOW ||
+                            authorization?.allowed !== true
+                        ) {
+                            acknowledge({
+                                success: false,
+                                code: "INSTALLATION_AUTHORIZATION_UNAVAILABLE",
+                                error:
+                                    "Installation authorization is temporarily unavailable.",
+                            });
+
+                            return;
+                        }
+
+                        // 5. Join only after authorization succeeds.
+                        const room = getSiteRoomName(vrmSiteId);
+
+                        if (!room) {
+                            acknowledge({
+                                success: false,
+                                code: "INVALID_SITE_ID",
+                                error: "A valid VRM site ID is required.",
+                            });
+
+                            return;
+                        }
+
+                        await socket.join(room);
 
                         console.log(
-                            `[Socket.IO] ${socket.id} subscribed to ${room}`
+                            `[Socket.IO] ${socket.id} authorized and subscribed to ${room}`
                         );
 
-
+                        // 6. Preserve the existing success contract.
                         acknowledge({
+
                             success: true,
 
                             vrmSiteId,
-
+                            
                             room,
                         });
-                    } catch (
-                    error
-                    ) {
+                    } catch (error) {
                         console.error(
-                            `[Socket.IO] Site subscription failed: ${error instanceof Error
-                                ? error.message
-                                : String(error)
+                            `[Socket.IO] Site subscription failed: ${
+                                error instanceof Error
+                                    ? error.message
+                                    : String(error)
                             }`
                         );
 
 
                         acknowledge({
                             success: false,
-                            code:
-                                "SITE_SUBSCRIPTION_FAILED",
+                            code: "INSTALLATION_AUTHORIZATION_UNAVAILABLE",
                             error:
-                                "Unable to subscribe to installation.",
+                                "Installation authorization is temporarily unavailable.",
                         });
                     }
                 }

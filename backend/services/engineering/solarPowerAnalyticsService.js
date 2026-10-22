@@ -935,6 +935,9 @@ function buildUnavailableResult({
         },
 
         power: {
+            samples:
+                [],
+
             sampleCount:
                 0,
 
@@ -1050,7 +1053,22 @@ function buildAvailableResult({
 
         unit,
 
-        power,
+        power: {
+            ...power,
+
+            samples:
+                prepared.series.map(
+                    (
+                        point
+                    ) => ({
+                        timestamp:
+                            point.timestamp,
+
+                        value:
+                            point.value,
+                    })
+                ),
+        },
 
         evidence: {
             primaryAttributeId:
@@ -1087,6 +1105,7 @@ function buildAvailableResult({
         boundaries:
             SOLAR_POWER_ANALYTICS_BOUNDARIES,
     };
+
 }
 
 

@@ -12,6 +12,11 @@ import {
 }
     from "../routes/backendApiIntegrationRoutes.js";
 
+import {
+    RBAC_PERMISSIONS,
+}
+    from "../services/security/authorizationRbacService.js";
+
 
 let assertionCount =
     0;
@@ -471,9 +476,9 @@ await throwsAsync(
         error
     ) =>
         error?.statusCode ===
-            503 &&
+        503 &&
         error?.code ===
-            "ENGINEERING_AGGREGATE_PROVIDER_UNAVAILABLE",
+        "ENGINEERING_AGGREGATE_PROVIDER_UNAVAILABLE",
     "missing live Phase 8.8 provider becomes explicit UNAVAILABLE rather than fabricated EMPTY"
 );
 
@@ -488,23 +493,80 @@ const mounts =
     [];
 
 const routerFixture =
-    {
-        use(
+{
+    use(
+        path,
+        ...handlers
+    ) {
+        mounts.push({
             path,
-            childRouter
-        ) {
-            mounts.push({
-                path,
-                childRouter,
-            });
+            handlers,
+            childRouter:
+                handlers[
+                handlers.length - 1
+                ],
+        });
 
-            return this;
-        },
-    };
+        return this;
+    },
+};
 
 const routerFactory =
     () =>
         routerFixture;
+
+const authenticate =
+    function authenticateFixture(
+        req,
+        res,
+        next
+    ) {
+        return next();
+    };
+
+
+const requireActiveSession =
+    function activeSessionFixture(
+        req,
+        res,
+        next
+    ) {
+        return next();
+    };
+
+
+const permissionRequests =
+    [];
+
+
+const permissionMiddlewares =
+    new Map();
+
+
+const requirePermission =
+    (
+        permission
+    ) => {
+        permissionRequests.push(
+            permission
+        );
+
+        const middleware =
+            function permissionFixture(
+                req,
+                res,
+                next
+            ) {
+                return next();
+            };
+
+        permissionMiddlewares.set(
+            permission,
+            middleware
+        );
+
+        return middleware;
+    };
 
 
 const engineeringAggregate =
@@ -523,19 +585,19 @@ let receivedEngineeringProvider =
 
 const engineeringController =
     Object.freeze({
-        health() {},
-        fleet() {},
-        families() {},
-        family() {},
-        sites() {},
-        site() {},
-        siteFamily() {},
+        health() { },
+        fleet() { },
+        families() { },
+        family() { },
+        sites() { },
+        site() { },
+        siteFamily() { },
     });
 
 const engineeringControllerFactory =
     ({
         aggregateProvider:
-            suppliedProvider,
+        suppliedProvider,
     }) => {
         receivedEngineeringProvider =
             suppliedProvider;
@@ -573,12 +635,12 @@ const ForecastRecordModel =
 
 const forecastingApiService =
     Object.freeze({
-        health() {},
-        listForecasts() {},
-        getForecastById() {},
-        getForecastByPersistenceKey() {},
-        listSiteForecasts() {},
-        getLatestSiteTargetForecast() {},
+        health() { },
+        listForecasts() { },
+        getForecastById() { },
+        getForecastByPersistenceKey() { },
+        listSiteForecasts() { },
+        getLatestSiteTargetForecast() { },
     });
 
 let receivedForecastModel =
@@ -587,7 +649,7 @@ let receivedForecastModel =
 const forecastingApiServiceFactory =
     ({
         ForecastRecordModel:
-            suppliedModel,
+        suppliedModel,
     }) => {
         receivedForecastModel =
             suppliedModel;
@@ -598,19 +660,19 @@ const forecastingApiServiceFactory =
 
 const forecastingController =
     Object.freeze({
-        health() {},
-        listForecasts() {},
-        getForecastById() {},
-        getForecastByPersistenceKey() {},
-        listSiteForecasts() {},
-        getLatestSiteTargetForecast() {},
+        health() { },
+        listForecasts() { },
+        getForecastById() { },
+        getForecastByPersistenceKey() { },
+        listSiteForecasts() { },
+        getLatestSiteTargetForecast() { },
     });
 
 
 const forecastingControllerFactory =
     ({
         forecastingApiService:
-            suppliedService,
+        suppliedService,
     }) => {
         same(
             suppliedService,
@@ -682,6 +744,12 @@ const integratedRouter =
         financialBiRouterFactory,
 
         optimizationRouter,
+
+        authenticate,
+
+        requireActiveSession,
+
+        requirePermission,
     });
 
 
@@ -757,6 +825,133 @@ same(
     "Optimization/DSS mount preserves existing router"
 );
 
+/*
+|--------------------------------------------------------------------------
+| E.1 Production security composition
+|--------------------------------------------------------------------------
+*/
+
+equal(
+    permissionRequests.length,
+    4,
+    "12.8 integration requests exactly four analytical permissions"
+);
+
+equal(
+    permissionRequests[0],
+    RBAC_PERMISSIONS
+        .READ_ENGINEERING_ANALYTICS,
+    "Engineering Analytics requires READ_ENGINEERING_ANALYTICS"
+);
+
+equal(
+    permissionRequests[1],
+    RBAC_PERMISSIONS
+        .READ_FORECASTING,
+    "Forecasting requires READ_FORECASTING"
+);
+
+equal(
+    permissionRequests[2],
+    RBAC_PERMISSIONS
+        .READ_FINANCIAL_BI,
+    "Financial/BI requires READ_FINANCIAL_BI"
+);
+
+equal(
+    permissionRequests[3],
+    RBAC_PERMISSIONS
+        .READ_OPTIMIZATION_DSS,
+    "Optimization/DSS requires READ_OPTIMIZATION_DSS"
+);
+
+
+for (
+    const {
+        mount,
+        permission,
+        label,
+    }
+    of [
+        {
+            mount:
+                mounts[0],
+
+            permission:
+                RBAC_PERMISSIONS
+                    .READ_ENGINEERING_ANALYTICS,
+
+            label:
+                "Engineering Analytics",
+        },
+        {
+            mount:
+                mounts[1],
+
+            permission:
+                RBAC_PERMISSIONS
+                    .READ_FORECASTING,
+
+            label:
+                "Forecasting",
+        },
+        {
+            mount:
+                mounts[2],
+
+            permission:
+                RBAC_PERMISSIONS
+                    .READ_FINANCIAL_BI,
+
+            label:
+                "Financial/BI",
+        },
+        {
+            mount:
+                mounts[3],
+
+            permission:
+                RBAC_PERMISSIONS
+                    .READ_OPTIMIZATION_DSS,
+
+            label:
+                "Optimization/DSS",
+        },
+    ]
+) {
+    equal(
+        mount.handlers.length,
+        4,
+        `${label} mount has exactly three security middleware stages before its router`
+    );
+
+    same(
+        mount.handlers[0],
+        authenticate,
+        `${label} authenticates ACCESS token first`
+    );
+
+    same(
+        mount.handlers[1],
+        requireActiveSession,
+        `${label} validates active session second`
+    );
+
+    same(
+        mount.handlers[2],
+        permissionMiddlewares.get(
+            permission
+        ),
+        `${label} enforces explicit permission third`
+    );
+
+    same(
+        mount.handlers[3],
+        mount.childRouter,
+        `${label} reaches existing router only after security chain`
+    );
+}
+
 
 /*
 |--------------------------------------------------------------------------
@@ -817,6 +1012,36 @@ throws(
     "missing Optimization/DSS router is rejected"
 );
 
+throws(
+    () =>
+        createBackendApiIntegrationRouter({
+            authenticate:
+                null,
+        }),
+    /PORTAL_ACCESS_AUTHENTICATION_REQUIRED/,
+    "missing portal ACCESS authentication middleware is rejected"
+);
+
+throws(
+    () =>
+        createBackendApiIntegrationRouter({
+            requireActiveSession:
+                null,
+        }),
+    /PORTAL_ACTIVE_SESSION_REQUIRED/,
+    "missing active portal session middleware is rejected"
+);
+
+throws(
+    () =>
+        createBackendApiIntegrationRouter({
+            requirePermission:
+                null,
+        }),
+    /PORTAL_PERMISSION_AUTHORIZATION_REQUIRED/,
+    "missing portal permission authorization factory is rejected"
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -826,7 +1051,7 @@ throws(
 
 ok(
     assertionCount >
-        0,
+    0,
     "12.8 assertion plan completed"
 );
 

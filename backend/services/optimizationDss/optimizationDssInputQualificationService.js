@@ -190,33 +190,119 @@ function insideHorizon(
   );
 }
 
-
 function expectedMetricContracts(
   contract
 ) {
-  return contract.objectives
-    .filter(
-      objective =>
-        objective
-          ?.sourceMetricName
-    )
-    .map(
-      objective => ({
-        metricName:
+  const objectiveContracts =
+    contract.objectives
+      .filter(
+        objective =>
           objective
-            .sourceMetricName,
+            ?.sourceMetricName
+      )
+      .map(
+        objective => ({
+          metricName:
+            objective
+              .sourceMetricName,
 
-        unit:
-          objective
-            .unit,
+          unit:
+            objective
+              .unit,
 
-        currency:
-          objective
-            .currency,
-      })
-    );
+          currency:
+            objective
+              .currency,
+
+          evidenceRole:
+            "OBJECTIVE",
+        })
+      );
+
+  const constraintContracts =
+    contract.constraints
+      .flatMap(
+        constraint => {
+          if (
+            Array.isArray(
+              constraint
+                ?.evidenceContracts
+            ) &&
+            constraint
+              .evidenceContracts
+              .length >
+              0
+          ) {
+            return constraint
+              .evidenceContracts
+              .map(
+                evidenceContract => ({
+                  metricName:
+                    evidenceContract
+                      .metricName,
+
+                  unit:
+                    evidenceContract
+                      .unit ??
+                    null,
+
+                  currency:
+                    evidenceContract
+                      .currency ??
+                    null,
+
+                  evidenceRole:
+                    "CONSTRAINT",
+                })
+              );
+          }
+
+          return [];
+        }
+      );
+
+  const combined = [
+    ...objectiveContracts,
+    ...constraintContracts,
+  ];
+
+  const unique =
+    new Map();
+
+  for (
+    const metricContract of
+    combined
+  ) {
+    const existing =
+      unique.get(
+        metricContract.metricName
+      );
+
+    if (!existing) {
+      unique.set(
+        metricContract.metricName,
+        metricContract
+      );
+
+      continue;
+    }
+
+    if (
+      existing.unit !==
+        metricContract.unit ||
+      existing.currency !==
+        metricContract.currency
+    ) {
+      throw new Error(
+        "EVIDENCE_METRIC_CONTRACT_CONFLICT"
+      );
+    }
+  }
+
+  return [
+    ...unique.values(),
+  ];
 }
-
 
 function scopeMatches(
   evidence,

@@ -23,6 +23,7 @@ import {
     isHistoricalTelemetryAllowed,
 } from "./telemetryPersistencePolicy.js";
 
+
 const extractRecords = (response) => {
     if (
         Array.isArray(response?.records)
@@ -46,6 +47,7 @@ const extractRecords = (response) => {
 
     return [];
 };
+
 
 /*
 |--------------------------------------------------------------------------
@@ -133,6 +135,7 @@ const getTelemetrySyncState = async (
     );
 };
 
+
 /*
 |--------------------------------------------------------------------------
 | Installation telemetry synchronization
@@ -156,6 +159,20 @@ const syncTelemetryForInstallation =
              * prevents duplicate persistence.
              */
             overlapSeconds = 120,
+
+            /*
+             * Raw telemetry retention boundary.
+             *
+             * MongoDB currently expires raw telemetry
+             * after seven days.
+             *
+             * The ingestion path applies the same
+             * horizon so an absent, reset, or stale
+             * checkpoint cannot reintroduce telemetry
+             * that is already outside raw-data
+             * retention.
+             */
+            retentionDays = 7,
         } = options;
 
 
@@ -187,12 +204,63 @@ const syncTelemetryForInstallation =
             );
         }
 
+        if (
+            !Number.isFinite(
+                retentionDays
+            ) ||
+            retentionDays <= 0
+        ) {
+            throw new Error(
+                "Telemetry retentionDays must be a positive number."
+            );
+        }
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Establish synchronization timing boundaries
+        |--------------------------------------------------------------------------
+        |
+        | retentionFloorEpoch is intentionally independent
+        | from the telemetry checkpoint.
+        |
+        | Checkpoint:
+        |     controls normal incremental synchronization.
+        |
+        | Retention floor:
+        |     prevents expired raw telemetry from being
+        |     reintroduced if checkpoint state is absent,
+        |     reset, or unexpectedly stale.
+        |
+        */
 
         const startedAt =
             Date.now();
 
         const attemptAt =
             new Date();
+
+        const retentionSeconds =
+            Math.floor(
+                retentionDays *
+                24 *
+                60 *
+                60
+            );
+
+        const retentionFloorEpoch =
+            Math.floor(
+                attemptAt.getTime() /
+                1000
+            ) -
+            retentionSeconds;
+
+        const retentionFloorDate =
+            new Date(
+                retentionFloorEpoch *
+                1000
+            );
+
 
         const syncState =
             await getTelemetrySyncState(
@@ -225,6 +293,13 @@ const syncTelemetryForInstallation =
             |--------------------------------------------------------------------------
             | Retrieve VRM diagnostics
             |--------------------------------------------------------------------------
+            |
+            | The current VRM diagnostics wrapper exposes
+            | count only.
+            |
+            | Do not invent unsupported remote start/end
+            | parameters here.
+            |
             */
 
             const fetchStartedAt =
@@ -368,9 +443,30 @@ const syncTelemetryForInstallation =
 
             /*
             |--------------------------------------------------------------------------
-            | Checkpoint candidate filtering
+            | Retention and checkpoint candidate filtering
             |--------------------------------------------------------------------------
+            |
+            | Two independent lower boundaries exist:
+            |
+            | 1. retentionFloorEpoch
+            |    Hard raw-data lifecycle boundary.
+            |
+            | 2. minimumEpoch
+            |    Incremental checkpoint boundary with
+            |    late-arrival overlap.
+            |
+            | A valid timestamp must satisfy BOTH when
+            | a checkpoint exists.
+            |
+            | Malformed timestamps continue into
+            | normalization so invalid accounting remains
+            | authoritative.
+            |
             */
+
+            let retentionFiltered = 0;
+
+            let checkpointFiltered = 0;
 
             const candidateRecords =
                 allowedRecords.filter(
@@ -395,6 +491,32 @@ const syncTelemetryForInstallation =
                             return true;
                         }
 
+
+                        /*
+                         * Hard raw telemetry retention
+                         * boundary.
+                         *
+                         * Never deliberately reinsert
+                         * telemetry that MongoDB's TTL
+                         * policy considers expired.
+                         */
+                        if (
+                            timestamp <
+                            retentionFloorEpoch
+                        ) {
+                            retentionFiltered +=
+                                1;
+
+                            return false;
+                        }
+
+
+                        /*
+                         * No checkpoint yet.
+                         *
+                         * Bootstrap is still bounded by
+                         * the retention floor above.
+                         */
                         if (
                             minimumEpoch ===
                             null
@@ -402,10 +524,22 @@ const syncTelemetryForInstallation =
                             return true;
                         }
 
-                        return (
-                            timestamp >=
+
+                        /*
+                         * Normal incremental checkpoint
+                         * filtering.
+                         */
+                        if (
+                            timestamp <
                             minimumEpoch
-                        );
+                        ) {
+                            checkpointFiltered +=
+                                1;
+
+                            return false;
+                        }
+
+                        return true;
                     }
                 );
 
@@ -424,6 +558,7 @@ const syncTelemetryForInstallation =
             const operations = [];
 
             let invalid = 0;
+
 
             /*
              * Start from the previous checkpoint.
@@ -521,6 +656,33 @@ const syncTelemetryForInstallation =
                     new Date(
                         normalized.timestamp
                     );
+
+
+                /*
+                 * Defense in depth:
+                 *
+                 * Candidate filtering uses the raw VRM
+                 * timestamp because that is the source
+                 * representation available before
+                 * normalization.
+                 *
+                 * Re-check the normalized timestamp
+                 * against retention before persistence.
+                 */
+
+                if (
+                    Math.floor(
+                        normalizedTimestamp
+                            .getTime() /
+                        1000
+                    ) <
+                    retentionFloorEpoch
+                ) {
+                    retentionFiltered +=
+                        1;
+
+                    continue;
+                }
 
 
                 /*
@@ -675,9 +837,19 @@ const syncTelemetryForInstallation =
                     lastCandidates:
                         candidateRecords.length,
 
+                    /*
+                     * Keep retention and checkpoint
+                     * filtering separately observable.
+                     *
+                     * This makes future scheduler
+                     * diagnostics substantially clearer
+                     * than combining both into one count.
+                     */
+                    lastRetentionFiltered:
+                        retentionFiltered,
+
                     lastCheckpointFiltered:
-                        allowedRecords.length -
-                        candidateRecords.length,
+                        checkpointFiltered,
 
                     lastProcessed:
                         persistedOperations,
@@ -692,6 +864,11 @@ const syncTelemetryForInstallation =
                         invalid,
 
                     overlapSeconds,
+
+                    retentionDays,
+
+                    retentionFloor:
+                        retentionFloorDate,
 
                     historicalAttributePolicySize:
                         HISTORICAL_TELEMETRY_ATTRIBUTE_IDS
@@ -831,6 +1008,17 @@ const syncTelemetryForInstallation =
                     overlapSeconds,
                 },
 
+                retention: {
+                    days:
+                        retentionDays,
+
+                    floor:
+                        retentionFloorDate,
+
+                    filtered:
+                        retentionFiltered,
+                },
+
                 installationStatus: {
                     status:
                         derivedStatus.status,
@@ -859,9 +1047,15 @@ const syncTelemetryForInstallation =
                 candidates:
                     candidateRecords.length,
 
-                checkpointFiltered:
-                    allowedRecords.length -
-                    candidateRecords.length,
+                /*
+                 * Preserve the existing result field
+                 * while giving it its correct meaning:
+                 * records rejected specifically by the
+                 * checkpoint boundary.
+                 */
+                checkpointFiltered,
+
+                retentionFiltered,
 
                 processed:
                     persistedOperations,
@@ -876,6 +1070,11 @@ const syncTelemetryForInstallation =
                     historicalAttributeCount:
                         HISTORICAL_TELEMETRY_ATTRIBUTE_IDS
                             .size,
+
+                    retentionDays,
+
+                    retentionFloor:
+                        retentionFloorDate,
                 },
 
                 performance: {

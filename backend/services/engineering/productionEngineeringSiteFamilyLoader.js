@@ -325,8 +325,213 @@ export async function loadProductionEngineeringSiteFamilies({
     });
 }
 
+export async function loadProductionEngineeringSiteFamily({
+    family,
+    installation,
+    installationId,
+    vrmSiteId,
+    reportingWindow,
+
+    siteElectricalProducer =
+        getProductionSiteElectricalPerformance,
+
+    energySourceProducer =
+        calculateProductionEnergySourceAnalytics,
+
+    batteryProducer =
+        getProductionBatteryAnalytics,
+
+    generatorProducer =
+        calculateGeneratorProductionAnalyticsFromMongo,
+
+    gridProducer =
+        getProductionGridSiteAnalytics,
+
+    solarProducer =
+        getProductionSolarSiteAnalytics,
+} = {}) {
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization boundary
+    |--------------------------------------------------------------------------
+    |
+    | installation / installationId / vrmSiteId MUST already come from the
+    | resolved Engineering Analytics authorization scope.
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        installation === null ||
+        typeof installation !== "object" ||
+        Array.isArray(installation)
+    ) {
+        throw new TypeError(
+            "Authorized installation object is required."
+        );
+    }
+
+    const normalizedInstallationId =
+        requireNonEmptyString(
+            installationId,
+            "installationId"
+        );
+
+    const normalizedVrmSiteId =
+        requireNonEmptyString(
+            vrmSiteId,
+            "vrmSiteId"
+        );
+
+    const normalizedFamily =
+        requireNonEmptyString(
+            family,
+            "family"
+        );
+
+    const window =
+        requireReportingWindow(
+            reportingWindow
+        );
+
+    const start =
+        window.start;
+
+    const end =
+        window.end;
+
+    /*
+    |--------------------------------------------------------------------------
+    | Execute exactly one requested family
+    |--------------------------------------------------------------------------
+    */
+
+    switch (
+        normalizedFamily
+    ) {
+        case "siteElectrical":
+            requireProducer(
+                siteElectricalProducer,
+                "siteElectricalProducer"
+            );
+
+            return (
+                await siteElectricalProducer({
+                    vrmSiteId:
+                        normalizedVrmSiteId,
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        case "energySource":
+            requireProducer(
+                energySourceProducer,
+                "energySourceProducer"
+            );
+
+            return (
+                await energySourceProducer({
+                    vrmSiteId:
+                        normalizedVrmSiteId,
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        case "battery":
+            requireProducer(
+                batteryProducer,
+                "batteryProducer"
+            );
+
+            return (
+                await batteryProducer({
+                    vrmSiteId:
+                        normalizedVrmSiteId,
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        case "generator":
+            requireProducer(
+                generatorProducer,
+                "generatorProducer"
+            );
+
+            return (
+                await generatorProducer({
+                    installationId:
+                        normalizedInstallationId,
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        case "grid":
+            requireProducer(
+                gridProducer,
+                "gridProducer"
+            );
+
+            return (
+                await gridProducer({
+                    installationId:
+                        normalizedInstallationId,
+
+                    vrmSiteId:
+                        normalizedVrmSiteId,
+
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        case "solar":
+            requireProducer(
+                solarProducer,
+                "solarProducer"
+            );
+
+            return (
+                await solarProducer({
+                    installationId:
+                        normalizedInstallationId,
+
+                    vrmSiteId:
+                        normalizedVrmSiteId,
+
+                    start,
+                    end,
+                })
+            ) ?? null;
+
+
+        default: {
+            const error =
+                new Error(
+                    `Unsupported engineering family: ${normalizedFamily}`
+                );
+
+            error.statusCode =
+                400;
+
+            error.code =
+                "UNSUPPORTED_ENGINEERING_FAMILY";
+
+            throw error;
+        }
+    }
+}
+
 
 export default Object.freeze({
     PRODUCTION_ENGINEERING_SITE_FAMILY_LOADER_PHASE,
     loadProductionEngineeringSiteFamilies,
+    loadProductionEngineeringSiteFamily,
 });

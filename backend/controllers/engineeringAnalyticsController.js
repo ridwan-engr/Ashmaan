@@ -7,7 +7,7 @@ import {
     getEngineeringFamilyApiView,
     getEngineeringSitesApiView,
     getEngineeringSiteApiView,
-    getEngineeringSiteFamilyApiView,
+    getTargetedEngineeringSiteFamilyApiView,
 } from "../services/engineering/engineeringAnalyticsApiService.js";
 
 
@@ -17,32 +17,25 @@ function sendError(
 ) {
     const statusCode =
         Number.isInteger(
-            error
-                ?.statusCode
+            error?.statusCode
         )
             ? error.statusCode
             : 500;
 
     return res
-        .status(
-            statusCode
-        )
+        .status(statusCode)
         .json({
-            success:
-                false,
+            success: false,
 
-            phase:
-                "8.9",
+            phase: "8.9",
 
             error: {
                 code:
-                    error
-                        ?.code ??
+                    error?.code ??
                     "ENGINEERING_ANALYTICS_API_ERROR",
 
                 message:
-                    error
-                        ?.message ??
+                    error?.message ??
                     "Engineering Analytics API request failed.",
             },
         });
@@ -51,7 +44,14 @@ function sendError(
 
 export function createEngineeringAnalyticsController({
     aggregateProvider,
+    siteFamilyProvider,
 } = {}) {
+    /*
+    |--------------------------------------------------------------------------
+    | Provider contracts
+    |--------------------------------------------------------------------------
+    */
+
     if (
         typeof aggregateProvider !==
         "function"
@@ -61,6 +61,26 @@ export function createEngineeringAnalyticsController({
         );
     }
 
+
+    if (
+        typeof siteFamilyProvider !==
+        "function"
+    ) {
+        throw new Error(
+            "Engineering Analytics siteFamilyProvider must be a function."
+        );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Fleet aggregate loader
+    |--------------------------------------------------------------------------
+    |
+    | Used by endpoints that genuinely require the Phase 8.8 fleet aggregate.
+    |--------------------------------------------------------------------------
+    */
+
     async function loadAggregate(
         req
     ) {
@@ -68,19 +88,52 @@ export function createEngineeringAnalyticsController({
             req,
 
             query:
-                req
-                    ?.query ??
+                req?.query ??
                 {},
 
             params:
-                req
-                    ?.params ??
+                req?.params ??
+                {},
+        });
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Targeted site-family loader
+    |--------------------------------------------------------------------------
+    |
+    | This path MUST NOT invoke the full fleet aggregate.
+    |
+    | Authorization and reporting-window validation are performed by the
+    | targeted production HTTP/provider composition.
+    |--------------------------------------------------------------------------
+    */
+
+    async function loadSiteFamily(
+        req
+    ) {
+        return siteFamilyProvider({
+            req,
+
+            query:
+                req?.query ??
+                {},
+
+            params:
+                req?.params ??
                 {},
         });
     }
 
 
     return Object.freeze({
+        /*
+        |--------------------------------------------------------------------------
+        | Health
+        |--------------------------------------------------------------------------
+        */
+
         health:
             async (
                 req,
@@ -93,24 +146,27 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getEngineeringApiHealth(
                                 aggregate
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
                     );
                 }
             },
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Fleet
+        |--------------------------------------------------------------------------
+        */
 
         fleet:
             async (
@@ -124,24 +180,27 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getFleetEngineeringApiView(
                                 aggregate
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
                     );
                 }
             },
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Families
+        |--------------------------------------------------------------------------
+        */
 
         families:
             async (
@@ -155,24 +214,27 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getEngineeringFamiliesApiView(
                                 aggregate
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
                     );
                 }
             },
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Fleet family
+        |--------------------------------------------------------------------------
+        */
 
         family:
             async (
@@ -186,27 +248,28 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getEngineeringFamilyApiView(
                                 aggregate,
-                                req
-                                    ?.params
-                                    ?.family
+                                req?.params?.family
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
                     );
                 }
             },
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Sites
+        |--------------------------------------------------------------------------
+        */
 
         sites:
             async (
@@ -220,24 +283,27 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getEngineeringSitesApiView(
                                 aggregate
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
                     );
                 }
             },
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | Site
+        |--------------------------------------------------------------------------
+        */
 
         site:
             async (
@@ -251,21 +317,15 @@ export function createEngineeringAnalyticsController({
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
                             getEngineeringSiteApiView(
                                 aggregate,
-                                req
-                                    ?.params
-                                    ?.vrmSiteId
+                                req?.params?.vrmSiteId
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error
@@ -273,36 +333,53 @@ export function createEngineeringAnalyticsController({
                 }
             },
 
+
+        /*
+        |--------------------------------------------------------------------------
+        | Targeted site-family
+        |--------------------------------------------------------------------------
+        |
+        | IMPORTANT:
+        |
+        | This endpoint intentionally bypasses loadAggregate().
+        |
+        | Old execution:
+        |
+        |   authorized fleet
+        |       -> every site
+        |       -> all six families
+        |       -> fleet aggregation
+        |       -> extract requested site/family
+        |
+        | Correct execution:
+        |
+        |   authorized scope
+        |       -> requested site
+        |       -> requested family
+        |       -> API envelope
+        |--------------------------------------------------------------------------
+        */
+
         siteFamily:
             async (
                 req,
                 res
             ) => {
                 try {
-                    const aggregate =
-                        await loadAggregate(
+                    const targeted =
+                        await loadSiteFamily(
                             req
                         );
 
                     return res
-                        .status(
-                            200
-                        )
+                        .status(200)
                         .json(
-                            getEngineeringSiteFamilyApiView(
-                                aggregate,
-                                req
-                                    ?.params
-                                    ?.vrmSiteId,
-                                req
-                                    ?.params
-                                    ?.family
+                            getTargetedEngineeringSiteFamilyApiView(
+                                targeted
                             )
                         );
                 }
-                catch (
-                    error
-                ) {
+                catch (error) {
                     return sendError(
                         res,
                         error

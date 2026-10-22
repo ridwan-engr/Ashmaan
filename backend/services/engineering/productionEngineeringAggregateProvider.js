@@ -27,6 +27,23 @@ export const PRODUCTION_ENGINEERING_FAMILY_KEYS =
     ]);
 
 
+/*
+|--------------------------------------------------------------------------
+| Production site concurrency
+|--------------------------------------------------------------------------
+|
+| Each site-family loader already executes the six Engineering Analytics
+| producers concurrently.
+|
+| Keep site-level concurrency bounded so the provider does not launch all
+| authorized sites simultaneously and overload MongoDB.
+|
+*/
+
+const PRODUCTION_ENGINEERING_SITE_CONCURRENCY =
+    4;
+
+
 function createProviderError(
     message,
     {
@@ -243,13 +260,20 @@ export async function createProductionEngineeringAggregate({
     }
 
 
-    const sites =
-        [];
+    /*
+    |--------------------------------------------------------------------------
+    | Authorized site-family loader
+    |--------------------------------------------------------------------------
+    |
+    | Load exactly one authorized installation.
+    |
+    | Authorization scope has already been resolved above. This function does
+    | not discover or expand that scope.
+    |
+    */
 
-
-    for (
-        const scopedInstallation
-        of scope.installations
+    async function loadAuthorizedSite(
+        scopedInstallation
     ) {
         const installation =
             scopedInstallation?.installation;
@@ -288,6 +312,12 @@ export async function createProductionEngineeringAggregate({
                 });
         }
         catch (error) {
+            /*
+            |--------------------------------------------------------------------------
+            | Preserve controlled upstream errors
+            |--------------------------------------------------------------------------
+            */
+
             if (
                 error?.statusCode &&
                 error?.code
@@ -295,22 +325,106 @@ export async function createProductionEngineeringAggregate({
                 throw error;
             }
 
+
             throw createProviderError(
                 "Engineering site-family production failed."
             );
         }
 
 
-        sites.push({
+        return {
             installation,
 
             families:
                 normalizeFamilies(
                     families
                 ),
-        });
+        };
     }
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bounded site concurrency
+    |--------------------------------------------------------------------------
+    |
+    | Previous implementation processed all authorized installations
+    | sequentially:
+    |
+    |     site 1 -> site 2 -> site 3 -> ... -> site N
+    |
+    | Each site-family loader already runs six persisted-data producers in
+    | parallel. Running every authorized site simultaneously would therefore
+    | create excessive database concurrency.
+    |
+    | Use a small worker pool instead.
+    |
+    | Results are written into their original scope indexes so fleet
+    | aggregation receives the same deterministic site ordering as before.
+    |
+    */
+
+    const sites =
+        new Array(
+            scope.installations.length
+        );
+
+
+    let nextIndex =
+        0;
+
+
+    async function worker() {
+        while (true) {
+            const index =
+                nextIndex++;
+
+
+            if (
+                index >=
+                scope.installations.length
+            ) {
+                return;
+            }
+
+
+            sites[index] =
+                await loadAuthorizedSite(
+                    scope.installations[
+                        index
+                    ]
+                );
+        }
+    }
+
+
+    const workerCount =
+        Math.min(
+            PRODUCTION_ENGINEERING_SITE_CONCURRENCY,
+            scope.installations.length
+        );
+
+
+    await Promise.all(
+        Array.from(
+            {
+                length:
+                    workerCount,
+            },
+            () =>
+                worker()
+        )
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Fleet aggregation
+    |--------------------------------------------------------------------------
+    |
+    | Preserve the existing Phase 8.8 aggregation boundary.
+    |
+    */
 
     return fleetAggregator({
         sites,

@@ -1,0 +1,325 @@
+// services/financialBi/mongooseFinancialBiReadRepository.js
+
+import FinancialBiKpiRecord
+    from "../../models/FinancialBiKpiRecord.js";
+
+
+const SORT_FIELD_MAP =
+    Object.freeze({
+        reportingStart:
+            "reportingWindow.start",
+
+        reportingEnd:
+            "reportingWindow.end",
+
+        metricName:
+            "metricName",
+
+        createdAt:
+            "createdAt",
+    });
+
+
+function normalizeAuthorizedVrmSiteIds(
+    values
+) {
+    if (!Array.isArray(values)) {
+        return null;
+    }
+
+    return [
+        ...new Set(
+            values
+                .map(
+                    (value) =>
+                        typeof value ===
+                        "string"
+                            ? value.trim()
+                            : ""
+                )
+                .filter(Boolean)
+        ),
+    ];
+}
+
+function normalizeAuthorizedVrmSiteIds(
+    values
+) {
+    if (!Array.isArray(values)) {
+        return null;
+    }
+
+    return [
+        ...new Set(
+            values
+                .map(
+                    (value) =>
+                        typeof value ===
+                        "string"
+                            ? value.trim()
+                            : ""
+                )
+                .filter(Boolean)
+        ),
+    ];
+}
+
+export function buildMongoFilter(
+    filters = {}
+) {
+    const mongo =
+        {};
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authorization-enforced multi-site scope
+    |--------------------------------------------------------------------------
+    |
+    | authorizedVrmSiteIds is an INTERNAL security constraint.
+    |
+    | Its presence means:
+    |
+    |   - Financial/BI scope is SITE only
+    |   - repository access is restricted to this exact set
+    |   - [] must match nothing
+    |
+    | It must never degrade into an unrestricted query.
+    |
+    |--------------------------------------------------------------------------
+    */
+
+    const authorizedVrmSiteIds =
+        normalizeAuthorizedVrmSiteIds(
+            filters
+                .authorizedVrmSiteIds
+        );
+
+    if (
+        authorizedVrmSiteIds !== null
+    ) {
+        /*
+         * Authorization scope overrides any broader domain
+         * scope supplied by the caller.
+         */
+        mongo.scope =
+            "SITE";
+
+        /*
+         * Explicit scalar SITE request must intersect with
+         * the authorization set.
+         */
+        if (
+            filters.vrmSiteId
+        ) {
+            const requestedVrmSiteId =
+                String(
+                    filters.vrmSiteId
+                ).trim();
+
+            if (
+                requestedVrmSiteId &&
+                authorizedVrmSiteIds
+                    .includes(
+                        requestedVrmSiteId
+                    )
+            ) {
+                mongo[
+                    "scopeIdentity.vrmSiteId"
+                ] =
+                    requestedVrmSiteId;
+            } else {
+                /*
+                 * Deliberately impossible match.
+                 *
+                 * This preserves the ACL constraint rather
+                 * than allowing an unauthorized scalar site
+                 * to broaden or replace it.
+                 */
+                mongo[
+                    "scopeIdentity.vrmSiteId"
+                ] = {
+                    $in: [],
+                };
+            }
+        } else {
+            /*
+             * [] is intentionally retained as $in: [].
+             *
+             * It matches no records and can never become an
+             * unrestricted Financial/BI collection query.
+             */
+            mongo[
+                "scopeIdentity.vrmSiteId"
+            ] = {
+                $in:
+                    authorizedVrmSiteIds,
+            };
+        }
+    } else {
+        /*
+        |--------------------------------------------------------------------------
+        | Existing domain query behavior
+        |--------------------------------------------------------------------------
+        |
+        | Preserve the pre-D3 repository contract for non-ACL callers.
+        |
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            filters.scope
+        ) {
+            mongo.scope =
+                filters.scope;
+        }
+
+        if (
+            filters.vrmSiteId
+        ) {
+            mongo[
+                "scopeIdentity.vrmSiteId"
+            ] =
+                filters.vrmSiteId;
+        }
+
+        if (
+            filters.fleetId
+        ) {
+            mongo[
+                "scopeIdentity.fleetId"
+            ] =
+                filters.fleetId;
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Existing non-identity filters
+    |--------------------------------------------------------------------------
+    */
+
+    if (
+        filters.metricName
+    ) {
+        mongo.metricName =
+            filters.metricName;
+    }
+
+    if (
+        filters.timezone
+    ) {
+        mongo[
+            "reportingWindow.timezone"
+        ] =
+            filters.timezone;
+    }
+
+    if (
+        filters.reportingStart ||
+        filters.reportingEnd
+    ) {
+        mongo[
+            "reportingWindow.start"
+        ] =
+            {};
+
+        if (
+            filters.reportingStart
+        ) {
+            mongo[
+                "reportingWindow.start"
+            ].$gte =
+                filters.reportingStart;
+        }
+
+        if (
+            filters.reportingEnd
+        ) {
+            mongo[
+                "reportingWindow.start"
+            ].$lt =
+                filters.reportingEnd;
+        }
+    }
+
+    mongo[
+        "reportingWindow.semantics"
+    ] =
+        "[start,end)";
+
+    return mongo;
+}
+
+export const mongooseFinancialBiReadRepository =
+    Object.freeze({
+        async listKpis({
+            filters,
+            pagination,
+            sort,
+        } = {}) {
+            const mongoFilter =
+                buildMongoFilter(
+                    filters
+                );
+
+            const sortField =
+                SORT_FIELD_MAP[
+                    sort.field
+                ];
+
+            const sortDirection =
+                sort.direction ===
+                    "asc"
+                    ? 1
+                    : -1;
+
+            const [
+                items,
+                total,
+            ] =
+                await Promise.all([
+                    FinancialBiKpiRecord
+                        .find(
+                            mongoFilter
+                        )
+                        .sort(
+                            {
+                                [sortField]:
+                                    sortDirection,
+
+                                _id:
+                                    1,
+                            }
+                        )
+                        .skip(
+                            pagination.offset
+                        )
+                        .limit(
+                            pagination.limit
+                        )
+                        .lean(),
+
+                    FinancialBiKpiRecord
+                        .countDocuments(
+                            mongoFilter
+                        ),
+                ]);
+
+            return {
+                items,
+                total,
+            };
+        },
+
+        async findByPersistenceKey({
+            persistenceKey,
+        } = {}) {
+            return FinancialBiKpiRecord
+                .findOne(
+                    {
+                        persistenceKey,
+                    }
+                )
+                .lean();
+        },
+    });

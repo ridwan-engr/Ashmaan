@@ -1,4 +1,4 @@
-// routes/backendApiIntegrationRoutes.js
+﻿// routes/backendApiIntegrationRoutes.js
 
 import express
     from "express";
@@ -18,6 +18,7 @@ import {
 
 import {
     createProductionEngineeringHttpProvider,
+    createProductionEngineeringSiteFamilyHttpProvider,
 }
     from "../services/engineering/productionEngineeringHttpProvider.js";
 
@@ -259,7 +260,7 @@ function requireFunction(
 ) {
     if (
         typeof value !==
-            "function"
+        "function"
     ) {
         throw new Error(
             `${name}_REQUIRED`
@@ -278,9 +279,9 @@ function requireRouter(
         !value ||
         (
             typeof value !==
-                "function" &&
+            "function" &&
             typeof value !==
-                "object"
+            "object"
         )
     ) {
         throw new Error(
@@ -294,43 +295,46 @@ function requireRouter(
 
 export function createBackendApiIntegrationRouter({
     engineeringAggregateProvider =
-        createProductionEngineeringHttpProvider(),
+    createProductionEngineeringHttpProvider(),
+
+    engineeringSiteFamilyProvider =
+    createProductionEngineeringSiteFamilyHttpProvider(),
 
     ForecastRecordModel =
-        ForecastRecord,
+    ForecastRecord,
 
     routerFactory =
-        express.Router,
+    express.Router,
 
     engineeringControllerFactory =
-        createEngineeringAnalyticsController,
+    createEngineeringAnalyticsController,
 
     engineeringRouterFactory =
-        createEngineeringAnalyticsRouter,
+    createEngineeringAnalyticsRouter,
 
     forecastingApiServiceFactory =
-        createForecastingApiService,
+    createForecastingApiService,
 
     forecastingControllerFactory =
-        createForecastingController,
+    createForecastingController,
 
     forecastingRouterFactory =
-        createForecastingRouter,
+    createForecastingRouter,
 
     financialBiRouterFactory =
-        createFinancialBiRouter,
+    createFinancialBiRouter,
 
     optimizationRouter =
-        optimizationDssRoutes,
+    optimizationDssRoutes,
 
     authenticate =
-        authenticatePortalAccessToken,
+    authenticatePortalAccessToken,
 
     requireActiveSession =
-        requireActivePortalSession,
+    requireActivePortalSession,
 
     requirePermission =
-        requirePortalPermission,
+    requirePortalPermission,
 } = {}) {
     requireFunction(
         routerFactory,
@@ -340,6 +344,11 @@ export function createBackendApiIntegrationRouter({
     requireFunction(
         engineeringAggregateProvider,
         "ENGINEERING_AGGREGATE_PROVIDER"
+    );
+
+    requireFunction(
+        engineeringSiteFamilyProvider,
+        "ENGINEERING_SITE_FAMILY_PROVIDER"
     );
 
     requireFunction(
@@ -400,7 +409,7 @@ export function createBackendApiIntegrationRouter({
     if (
         !router ||
         typeof router.use !==
-            "function"
+        "function"
     ) {
         throw new Error(
             "BACKEND_API_ROUTER_INVALID"
@@ -415,10 +424,13 @@ export function createBackendApiIntegrationRouter({
     */
 
     const engineeringController =
-        engineeringControllerFactory({
-            aggregateProvider:
-                engineeringAggregateProvider,
-        });
+    engineeringControllerFactory({
+        aggregateProvider:
+            engineeringAggregateProvider,
+
+        siteFamilyProvider:
+            engineeringSiteFamilyProvider,
+    });
 
     const engineeringRouter =
         engineeringRouterFactory({

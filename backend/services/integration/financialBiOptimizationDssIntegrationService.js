@@ -196,7 +196,7 @@ export function validateFinancialBiOptimizationEvidence(
 
         if (
             evidence.scope ===
-                OPTIMIZATION_DSS_SCOPE.SITE &&
+            OPTIMIZATION_DSS_SCOPE.SITE &&
             !evidence.scopeIdentity?.vrmSiteId
         ) {
             throw new Error(
@@ -206,7 +206,7 @@ export function validateFinancialBiOptimizationEvidence(
 
         if (
             evidence.scope ===
-                OPTIMIZATION_DSS_SCOPE.FLEET &&
+            OPTIMIZATION_DSS_SCOPE.FLEET &&
             !evidence.scopeIdentity?.fleetId
         ) {
             throw new Error(
@@ -220,7 +220,7 @@ export function validateFinancialBiOptimizationEvidence(
         if (
             !reportingWindow ||
             reportingWindow.semantics !==
-                OPTIMIZATION_DSS_TIME_SEMANTICS
+            OPTIMIZATION_DSS_TIME_SEMANTICS
         ) {
             throw new Error(
                 `FINANCIAL_BI_EVIDENCE_${index}_REPORTING_WINDOW_INVALID`
@@ -267,9 +267,9 @@ export function validateFinancialBiOptimizationEvidence(
 
             if (
                 evidence.scope ===
-                    OPTIMIZATION_DSS_SCOPE.SITE &&
+                OPTIMIZATION_DSS_SCOPE.SITE &&
                 evidence.scopeIdentity?.vrmSiteId !==
-                    first.scopeIdentity?.vrmSiteId
+                first.scopeIdentity?.vrmSiteId
             ) {
                 throw new Error(
                     "FINANCIAL_BI_EVIDENCE_SCOPE_IDENTITY_MISMATCH"
@@ -278,9 +278,9 @@ export function validateFinancialBiOptimizationEvidence(
 
             if (
                 evidence.scope ===
-                    OPTIMIZATION_DSS_SCOPE.FLEET &&
+                OPTIMIZATION_DSS_SCOPE.FLEET &&
                 evidence.scopeIdentity?.fleetId !==
-                    first.scopeIdentity?.fleetId
+                first.scopeIdentity?.fleetId
             ) {
                 throw new Error(
                     "FINANCIAL_BI_EVIDENCE_SCOPE_IDENTITY_MISMATCH"
@@ -297,7 +297,7 @@ export function validateFinancialBiOptimizationEvidence(
                     first.reportingWindow.end
                 ) ||
                 reportingWindow.timezone !==
-                    first.reportingWindow.timezone
+                first.reportingWindow.timezone
             ) {
                 throw new Error(
                     "FINANCIAL_BI_EVIDENCE_REPORTING_WINDOW_MISMATCH"
@@ -352,6 +352,83 @@ export function validateFinancialBiOptimizationRequest(
         "OPTIMIZATION_CONSTRAINTS"
     );
 
+    /*
+ * Optional explicit dispatch/optimization horizon.
+ *
+ * Financial BI reportingWindow and Optimization DSS horizon
+ * are intentionally separate concepts.
+ *
+ * When absent, Phase 12.7 retains its historical behaviour
+ * and falls back to the Financial BI reporting window.
+ */
+    let optimizationHorizon =
+        null;
+
+    if (
+        optimizationRequest
+            .optimizationHorizon !==
+        undefined &&
+        optimizationRequest
+            .optimizationHorizon !==
+        null
+    ) {
+        const requestedHorizon =
+            requireObject(
+                optimizationRequest
+                    .optimizationHorizon,
+                "OPTIMIZATION_HORIZON"
+            );
+
+        const start =
+            new Date(
+                requestedHorizon.start
+            );
+
+        const end =
+            new Date(
+                requestedHorizon.end
+            );
+
+        if (
+            Number.isNaN(
+                start.getTime()
+            ) ||
+            Number.isNaN(
+                end.getTime()
+            ) ||
+            end <= start
+        ) {
+            throw new Error(
+                "OPTIMIZATION_HORIZON_INVALID"
+            );
+        }
+
+        if (
+            typeof requestedHorizon
+                .timezone !== "string" ||
+            !requestedHorizon
+                .timezone.trim()
+        ) {
+            throw new Error(
+                "OPTIMIZATION_HORIZON_TIMEZONE_REQUIRED"
+            );
+        }
+
+        optimizationHorizon =
+            Object.freeze({
+                start:
+                    start.toISOString(),
+
+                end:
+                    end.toISOString(),
+
+                timezone:
+                    requestedHorizon
+                        .timezone
+                        .trim(),
+            });
+    }
+
     return Object.freeze({
         objectives:
             optimizationRequest.objectives,
@@ -361,6 +438,9 @@ export function validateFinancialBiOptimizationRequest(
 
         constraints:
             optimizationRequest.constraints,
+
+        optimizationHorizon,
+
     });
 }
 
@@ -370,13 +450,13 @@ export function qualifyFinancialBiOptimizationDssIntegration({
     optimizationRequest,
 
     horizonBuilder =
-        buildOptimizationDssHorizon,
+    buildOptimizationDssHorizon,
 
     contractBuilder =
-        createOptimizationDssContract,
+    createOptimizationDssContract,
 
     inputQualifier =
-        qualifyOptimizationDssInputs,
+    qualifyOptimizationDssInputs,
 } = {}) {
     const evidence =
         validateFinancialBiOptimizationEvidence(
@@ -461,11 +541,11 @@ export function executeFinancialBiOptimizationDssIntegration({
     if (
         !qualifiedIntegration ||
         qualifiedIntegration.phase !==
-            FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_PHASE ||
+        FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_PHASE ||
         qualifiedIntegration.layer !==
-            FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_LAYER ||
+        FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_LAYER ||
         qualifiedIntegration.status !==
-            FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_STATUS.QUALIFIED
+        FINANCIAL_BI_OPTIMIZATION_DSS_INTEGRATION_STATUS.QUALIFIED
     ) {
         throw new Error(
             "QUALIFIED_PHASE_12_7_INTEGRATION_REQUIRED"
@@ -476,18 +556,32 @@ export function executeFinancialBiOptimizationDssIntegration({
         qualifiedIntegration;
 
     try {
+        /*
+ * Optimization horizon is independent of the Financial BI
+ * reporting window.
+ *
+ * New production callers provide optimizationHorizon from
+ * the qualified forecast horizon.
+ *
+ * The reporting-window fallback preserves backward
+ * compatibility for existing Phase 12.7 callers.
+ */
+        const requestedHorizon =
+            q.optimizationRequest
+                .optimizationHorizon ??
+            q.reportingWindow;
+
         const horizon =
             q.horizonBuilder({
                 start:
-                    q.reportingWindow.start,
+                    requestedHorizon.start,
 
                 end:
-                    q.reportingWindow.end,
+                    requestedHorizon.end,
 
                 timezone:
-                    q.reportingWindow.timezone,
+                    requestedHorizon.timezone,
             });
-
         const contract =
             q.contractBuilder({
                 horizon,
@@ -514,11 +608,11 @@ export function executeFinancialBiOptimizationDssIntegration({
 
         if (
             contract.phase !==
-                OPTIMIZATION_DSS_CONTRACT_PHASE ||
+            OPTIMIZATION_DSS_CONTRACT_PHASE ||
             contract.layer !==
-                OPTIMIZATION_DSS_CONTRACT_LAYER ||
+            OPTIMIZATION_DSS_CONTRACT_LAYER ||
             contract.architecture?.upstream !==
-                OPTIMIZATION_DSS_CONTRACT_UPSTREAM_LAYER
+            OPTIMIZATION_DSS_CONTRACT_UPSTREAM_LAYER
         ) {
             throw new Error(
                 "PHASE_11_1_CONTRACT_INVALID"

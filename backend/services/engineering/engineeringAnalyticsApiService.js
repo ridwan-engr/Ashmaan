@@ -3,7 +3,12 @@
 import {
     FLEET_ENGINEERING_AGGREGATION_PHASE,
     FLEET_ENGINEERING_FAMILIES,
+    extractExplicitEngineeringStatuses,
 } from "./fleetEngineeringAggregationService.js";
+
+import {
+    PRODUCTION_ENGINEERING_SITE_FAMILY_PROVIDER_PHASE,
+} from "./productionEngineeringSiteFamilyProvider.js";
 
 
 export const ENGINEERING_ANALYTICS_API_PHASE =
@@ -404,6 +409,194 @@ export function getFleetEngineeringApiView(
                     .boundaries,
         },
     });
+}
+
+export function getTargetedEngineeringSiteFamilyApiView(
+    targeted
+) {
+    if (
+        targeted === null ||
+        typeof targeted !== "object" ||
+        Array.isArray(targeted)
+    ) {
+        throw new TypeError(
+            "Targeted Engineering site-family result is required."
+        );
+    }
+
+
+    const normalizedSiteId =
+        normalizeVrmSiteId(
+            targeted.vrmSiteId
+        );
+
+
+    if (
+        !normalizedSiteId
+    ) {
+        const error =
+            new Error(
+                "VRM site ID is required."
+            );
+
+        error.statusCode =
+            400;
+
+        error.code =
+            "VRM_SITE_ID_REQUIRED";
+
+        throw error;
+    }
+
+
+    const normalizedFamily =
+        normalizeEngineeringFamily(
+            targeted.family
+        );
+
+
+    if (
+        !normalizedFamily
+    ) {
+        const error =
+            new Error(
+                `Unsupported engineering family: ${targeted.family}`
+            );
+
+        error.statusCode =
+            400;
+
+        error.code =
+            "UNSUPPORTED_ENGINEERING_FAMILY";
+
+        throw error;
+    }
+
+
+    const reportingWindow =
+        targeted.reportingWindow;
+
+
+    if (
+        reportingWindow === null ||
+        typeof reportingWindow !== "object" ||
+        Array.isArray(reportingWindow) ||
+        !reportingWindow.start ||
+        !reportingWindow.end ||
+        reportingWindow.semantics !== "[start,end)"
+    ) {
+        const error =
+            new Error(
+                "Targeted Engineering reporting window is invalid."
+            );
+
+        error.statusCode =
+            400;
+
+        error.code =
+            "ENGINEERING_REPORTING_WINDOW_INVALID";
+
+        throw error;
+    }
+
+
+    const result =
+        targeted.result ??
+        null;
+
+
+    if (
+        result !== null &&
+        (
+            typeof result !== "object" ||
+            Array.isArray(result)
+        )
+    ) {
+        throw new TypeError(
+            "Targeted Engineering family result is invalid."
+        );
+    }
+
+
+    const familyView = {
+        present:
+            result !== null,
+
+        result,
+
+        explicitStatuses:
+            extractExplicitEngineeringStatuses(
+                result
+            ),
+    };
+
+
+    return {
+        phase:
+            ENGINEERING_ANALYTICS_API_PHASE,
+
+        apiVersion:
+            ENGINEERING_ANALYTICS_API_VERSION,
+
+        resource:
+            "site-family",
+
+        status:
+            ENGINEERING_ANALYTICS_API_STATUS.READY,
+
+        reportingWindow,
+
+        generatedFrom: {
+            phase:
+                PRODUCTION_ENGINEERING_SITE_FAMILY_PROVIDER_PHASE,
+
+            layer:
+                "ENGINEERING_ANALYTICS",
+
+            scope:
+                "SITE_FAMILY",
+        },
+
+        metadata: {
+            vrmSiteId:
+                normalizedSiteId,
+
+            family:
+                normalizedFamily,
+
+            present:
+                familyView.present,
+        },
+
+        data: {
+            vrmSiteId:
+                normalizedSiteId,
+
+            family:
+                normalizedFamily,
+
+            familyView,
+        },
+
+        boundaries: {
+            ...ENGINEERING_ANALYTICS_API_BOUNDARIES,
+
+            aggregateReadOnly:
+                true,
+
+            reportingWindowPreserved:
+                true,
+
+            engineeringStatusesPreserved:
+                true,
+
+            targetedExecution:
+                true,
+
+            fleetAggregationPerformed:
+                false,
+        },
+    };
 }
 
 

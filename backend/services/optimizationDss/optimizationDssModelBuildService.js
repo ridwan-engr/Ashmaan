@@ -154,6 +154,67 @@ function finiteNumber(
 }
 
 
+function timestampsForBinding(
+  binding,
+  modelContract
+) {
+  if (
+    !binding.timeIndexed
+  ) {
+    return [
+      null,
+    ];
+  }
+
+  if (
+    Array.isArray(
+      binding.timestamps
+    )
+  ) {
+    if (
+      binding.timestamps.length ===
+        0
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_VARIABLE_BINDING
+      );
+    }
+
+    return binding.timestamps;
+  }
+
+  return modelContract
+    .timeIndex
+    .timestamps;
+}
+
+
+function variableIdForTimestamp(
+  binding,
+  timestamp
+) {
+  return binding.timeIndexed
+    ? `${binding.name}@${timestamp}`
+    : binding.name;
+}
+
+
+function findVariableBinding(
+  modelContract,
+  name
+) {
+  return modelContract
+    .variableBindings
+    .find(
+      binding =>
+        binding.name ===
+        name
+    ) ??
+    null;
+}
+
+
 function buildExpandedVariables(
   modelContract
 ) {
@@ -170,7 +231,8 @@ function buildExpandedVariables(
       !binding.unit
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_VARIABLE_BINDING
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_VARIABLE_BINDING
       );
     }
 
@@ -186,57 +248,31 @@ function buildExpandedVariables(
 
     if (
       binding.upperBound <
-        binding.lowerBound
+      binding.lowerBound
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_VARIABLE_BINDING
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_VARIABLE_BINDING
       );
     }
 
-    if (
-      binding.timeIndexed
-    ) {
-      for (
-        const timestamp of
+    const timestamps =
+      timestampsForBinding(
+        binding,
         modelContract
-          .timeIndex
-          .timestamps
-      ) {
-        rows.push(
-          Object.freeze({
-            variableId:
-              `${binding.name}@${timestamp}`,
+      );
 
-            bindingName:
-              binding.name,
-
-            variableKind:
-              binding.variableKind,
-
-            timestamp,
-
-            unit:
-              binding.unit,
-
-            lowerBound:
-              binding.lowerBound,
-
-            upperBound:
-              binding.upperBound,
-
-            value:
-              null,
-
-            optimized:
-              false,
-          })
-        );
-      }
-    } else {
+    for (
+      const timestamp of
+      timestamps
+    ) {
       rows.push(
         Object.freeze({
           variableId:
-            binding.name,
+            variableIdForTimestamp(
+              binding,
+              timestamp
+            ),
 
           bindingName:
             binding.name,
@@ -244,8 +280,7 @@ function buildExpandedVariables(
           variableKind:
             binding.variableKind,
 
-          timestamp:
-            null,
+          timestamp,
 
           unit:
             binding.unit,
@@ -266,9 +301,168 @@ function buildExpandedVariables(
     }
   }
 
+  const variableIds =
+    rows.map(
+      row =>
+        row.variableId
+    );
+
+  if (
+    new Set(
+      variableIds
+    ).size !==
+      variableIds.length
+  ) {
+    throw new Error(
+      OPTIMIZATION_DSS_MODEL_BUILD_REASON
+        .INVALID_VARIABLE_BINDING
+    );
+  }
+
   return Object.freeze(
     rows
   );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Qualified evidence access
+|--------------------------------------------------------------------------
+*/
+
+function qualifiedEvidenceArray(
+  modelContract
+) {
+  const evidence =
+    modelContract
+      ?.qualifiedInputs
+      ?.qualifiedEvidence;
+
+  if (
+    !Array.isArray(
+      evidence
+    )
+  ) {
+    return [];
+  }
+
+  return evidence;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Evidence-backed RHS resolution
+|--------------------------------------------------------------------------
+|
+| Time-indexed evidence must match the constraint timestamp exactly.
+|
+| No:
+| - nearest-neighbour lookup
+| - interpolation
+| - resampling
+| - missing-as-zero
+| - duplicate selection
+|
+*/
+
+function resolveEvidenceRightHandSide({
+  modelContract,
+  metricName,
+  timestamp,
+}) {
+  if (
+    typeof metricName !==
+      "string" ||
+    metricName.trim() ===
+      ""
+  ) {
+    throw new Error(
+      "CONSTRAINT_RHS_EVIDENCE_METRIC_INVALID"
+    );
+  }
+
+
+  const evidence =
+    qualifiedEvidenceArray(
+      modelContract
+    );
+
+
+  const metricMatches =
+    evidence.filter(
+      item =>
+        item?.metricName ===
+        metricName
+    );
+
+
+  let matches;
+
+
+  if (
+    timestamp ===
+      null
+  ) {
+    matches =
+      metricMatches;
+  } else {
+    matches =
+      metricMatches.filter(
+        item =>
+          item?.timestamp ===
+          timestamp
+      );
+  }
+
+
+  if (
+    matches.length ===
+      0
+  ) {
+    throw new Error(
+      `CONSTRAINT_RHS_EVIDENCE_NOT_FOUND:${metricName}:${timestamp ?? "STATIC"}`
+    );
+  }
+
+
+  if (
+    matches.length >
+      1
+  ) {
+    throw new Error(
+      `CONSTRAINT_RHS_EVIDENCE_AMBIGUOUS:${metricName}:${timestamp ?? "STATIC"}`
+    );
+  }
+
+
+  const evidenceItem =
+    matches[0];
+
+  const value =
+    evidenceItem?.value;
+
+
+  if (
+    typeof value !==
+      "number" ||
+    !Number.isFinite(
+      value
+    )
+  ) {
+    throw new Error(
+      `CONSTRAINT_RHS_EVIDENCE_VALUE_INVALID:${metricName}:${timestamp ?? "STATIC"}`
+    );
+  }
+
+
+  return Object.freeze({
+    value,
+
+    evidence:
+      evidenceItem,
+  });
 }
 
 
@@ -292,7 +486,8 @@ function buildObjectiveRows(
       )
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_OBJECTIVE_TERM
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_OBJECTIVE_TERM
       );
     }
 
@@ -305,10 +500,9 @@ function buildObjectiveRows(
       term.variableName ===
         null
         ? null
-        : modelContract.variableBindings.find(
-            binding =>
-              binding.name ===
-              term.variableName
+        : findVariableBinding(
+            modelContract,
+            term.variableName
           );
 
     if (
@@ -317,13 +511,17 @@ function buildObjectiveRows(
       !variableBinding
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_OBJECTIVE_TERM
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_OBJECTIVE_TERM
       );
     }
 
     const timestamps =
-      variableBinding?.timeIndexed
-        ? modelContract.timeIndex.timestamps
+      variableBinding
+        ? timestampsForBinding(
+            variableBinding,
+            modelContract
+          )
         : [
             null,
           ];
@@ -353,13 +551,12 @@ function buildObjectiveRows(
             term.coefficient,
 
           variableId:
-            term.variableName ===
-              null
-              ? null
-              : timestamp ===
-                  null
-                ? term.variableName
-                : `${term.variableName}@${timestamp}`,
+            variableBinding
+              ? variableIdForTimestamp(
+                  variableBinding,
+                  timestamp
+                )
+              : null,
 
           evidenceMetricName:
             term.evidenceMetricName,
@@ -386,11 +583,231 @@ function buildObjectiveRows(
 }
 
 
+function resolveLegacyConstraintVariables({
+  boundVariables,
+  timestamp,
+  modelContract,
+}) {
+  const variableIds =
+    [];
+
+  for (
+    const variableBinding of
+    boundVariables
+  ) {
+    if (
+      !variableBinding.timeIndexed
+    ) {
+      variableIds.push(
+        variableBinding.name
+      );
+
+      continue;
+    }
+
+    const availableTimestamps =
+      timestampsForBinding(
+        variableBinding,
+        modelContract
+      );
+
+    if (
+      !availableTimestamps.includes(
+        timestamp
+      )
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
+      );
+    }
+
+    variableIds.push(
+      variableIdForTimestamp(
+        variableBinding,
+        timestamp
+      )
+    );
+  }
+
+  return Object.freeze(
+    variableIds
+  );
+}
+
+
+function resolveCrossTimeVariableTerms({
+  binding,
+  modelContract,
+  baseTimestamp,
+}) {
+  if (
+    !Array.isArray(
+      binding.variableTerms
+    ) ||
+    binding.variableTerms.length ===
+      0
+  ) {
+    throw new Error(
+      OPTIMIZATION_DSS_MODEL_BUILD_REASON
+        .INVALID_CONSTRAINT_BINDING
+    );
+  }
+
+  const resolvedTerms =
+    [];
+
+  for (
+    const term of
+    binding.variableTerms
+  ) {
+    const variableBinding =
+      findVariableBinding(
+        modelContract,
+        term.variableName
+      );
+
+    if (
+      !variableBinding
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
+      );
+    }
+
+    finiteNumber(
+      term.coefficient,
+      "CONSTRAINT_VARIABLE_TERM_COEFFICIENT"
+    );
+
+    if (
+      !Number.isInteger(
+        term.timeOffset
+      )
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
+      );
+    }
+
+    if (
+      !variableBinding.timeIndexed
+    ) {
+      if (
+        term.timeOffset !==
+          0
+      ) {
+        throw new Error(
+          OPTIMIZATION_DSS_MODEL_BUILD_REASON
+            .INVALID_CONSTRAINT_BINDING
+        );
+      }
+
+      resolvedTerms.push(
+        Object.freeze({
+          variableName:
+            term.variableName,
+
+          variableId:
+            variableBinding.name,
+
+          timestamp:
+            null,
+
+          timeOffset:
+            0,
+
+          coefficient:
+            term.coefficient,
+        })
+      );
+
+      continue;
+    }
+
+    const variableTimestamps =
+      timestampsForBinding(
+        variableBinding,
+        modelContract
+      );
+
+    const baseVariableIndex =
+      variableTimestamps.indexOf(
+        baseTimestamp
+      );
+
+    if (
+      baseVariableIndex <
+        0
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
+      );
+    }
+
+    const targetIndex =
+      baseVariableIndex +
+      term.timeOffset;
+
+    if (
+      targetIndex <
+        0 ||
+      targetIndex >=
+        variableTimestamps.length
+    ) {
+      throw new Error(
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
+      );
+    }
+
+    const targetTimestamp =
+      variableTimestamps[
+        targetIndex
+      ];
+
+    resolvedTerms.push(
+      Object.freeze({
+        variableName:
+          term.variableName,
+
+        variableId:
+          variableIdForTimestamp(
+            variableBinding,
+            targetTimestamp
+          ),
+
+        timestamp:
+          targetTimestamp,
+
+        timeOffset:
+          term.timeOffset,
+
+        coefficient:
+          term.coefficient,
+      })
+    );
+  }
+
+  return Object.freeze(
+    resolvedTerms
+  );
+}
+
+
 function buildConstraintRows(
   modelContract
 ) {
   const rows =
     [];
+
+  const timeIndex =
+    modelContract
+      .timeIndex
+      .timestamps;
 
   for (
     const binding of
@@ -406,19 +823,21 @@ function buildConstraintRows(
         0
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_CONSTRAINT_BINDING
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
       );
     }
+
 
     const boundVariables =
       binding.variableNames.map(
         name =>
-          modelContract.variableBindings.find(
-            variable =>
-              variable.name ===
-              name
+          findVariableBinding(
+            modelContract,
+            name
           )
       );
+
 
     if (
       boundVariables.some(
@@ -427,9 +846,11 @@ function buildConstraintRows(
       )
     ) {
       throw new Error(
-        OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_CONSTRAINT_BINDING
+        OPTIMIZATION_DSS_MODEL_BUILD_REASON
+          .INVALID_CONSTRAINT_BINDING
       );
     }
+
 
     const timeIndexed =
       boundVariables.some(
@@ -437,17 +858,149 @@ function buildConstraintRows(
           item.timeIndexed
       );
 
+
+    /*
+     * Explicit constraint timestamps are preferred.
+     *
+     * initialStateConstraint remains only as a
+     * backward-compatible safeguard.
+     */
     const timestamps =
       timeIndexed
-        ? modelContract.timeIndex.timestamps
+        ? Array.isArray(
+            binding.timestamps
+          )
+          ? binding.timestamps
+          : binding.parameters
+                ?.initialStateConstraint ===
+              true
+            ? [
+                timeIndex[0],
+              ]
+            : timeIndex
         : [
             null,
           ];
+
 
     for (
       const timestamp of
       timestamps
     ) {
+      const usesVariableTerms =
+        Array.isArray(
+          binding.variableTerms
+        );
+
+
+      const resolvedVariableTerms =
+        usesVariableTerms
+          ? resolveCrossTimeVariableTerms({
+              binding,
+              modelContract,
+              baseTimestamp:
+                timestamp,
+            })
+          : null;
+
+
+      const variableIds =
+        usesVariableTerms
+          ? Object.freeze(
+              resolvedVariableTerms.map(
+                term =>
+                  term.variableId
+              )
+            )
+          : resolveLegacyConstraintVariables({
+              boundVariables,
+              timestamp,
+              modelContract,
+            });
+
+
+      const coefficients =
+        usesVariableTerms
+          ? Object.freeze(
+              resolvedVariableTerms.map(
+                term =>
+                  term.coefficient
+              )
+            )
+          : Array.isArray(
+              binding.coefficients
+            )
+            ? Object.freeze([
+                ...binding.coefficients,
+              ])
+            : null;
+
+
+      /*
+       * Resolve the numerical RHS.
+       *
+       * Explicit RHS:
+       *   preserve the contract value.
+       *
+       * Evidence-backed RHS:
+       *   resolve exactly one qualified evidence
+       *   point at the constraint timestamp.
+       */
+      let resolvedRightHandSide =
+        binding.rightHandSide ??
+        null;
+
+      let resolvedRightHandSideEvidence =
+        null;
+
+
+      if (
+        binding.rightHandSideEvidenceMetricName !==
+          null &&
+        binding.rightHandSideEvidenceMetricName !==
+          undefined
+      ) {
+        const resolution =
+          resolveEvidenceRightHandSide({
+            modelContract,
+
+            metricName:
+              binding
+                .rightHandSideEvidenceMetricName,
+
+            timestamp,
+          });
+
+
+        resolvedRightHandSide =
+          resolution.value;
+
+        resolvedRightHandSideEvidence =
+          resolution.evidence;
+      }
+
+
+      /*
+       * Every algebraic built row must have
+       * a concrete finite RHS by this point.
+       */
+      if (
+        binding.algebraic ===
+          true &&
+        (
+          typeof resolvedRightHandSide !==
+            "number" ||
+          !Number.isFinite(
+            resolvedRightHandSide
+          )
+        )
+      ) {
+        throw new Error(
+          `CONSTRAINT_RHS_UNRESOLVED:${binding.name}:${timestamp ?? "STATIC"}`
+        );
+      }
+
+
       rows.push(
         Object.freeze({
           constraintRowId:
@@ -464,16 +1017,10 @@ function buildConstraintRows(
 
           timestamp,
 
-          variableIds:
-            Object.freeze(
-              binding.variableNames.map(
-                name =>
-                  timestamp ===
-                    null
-                    ? name
-                    : `${name}@${timestamp}`
-              )
-            ),
+          variableIds,
+
+          variableTerms:
+            resolvedVariableTerms,
 
           evidenceMetricNames:
             Object.freeze([
@@ -484,6 +1031,27 @@ function buildConstraintRows(
             Object.freeze({
               ...binding.parameters,
             }),
+
+          algebraic:
+            binding.algebraic ===
+              true,
+
+          coefficients,
+
+          operator:
+            binding.operator ??
+            null,
+
+          rightHandSide:
+            resolvedRightHandSide,
+
+          rightHandSideEvidenceMetricName:
+            binding
+              .rightHandSideEvidenceMetricName ??
+            null,
+
+          rightHandSideEvidence:
+            resolvedRightHandSideEvidence,
 
           required:
             binding.required,
@@ -515,9 +1083,11 @@ export function buildOptimizationDssModel({
       OPTIMIZATION_DSS_MODEL_CONTRACT_LAYER
   ) {
     throw new Error(
-      OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_MODEL_CONTRACT
+      OPTIMIZATION_DSS_MODEL_BUILD_REASON
+        .INVALID_MODEL_CONTRACT
     );
   }
+
 
   if (
     !modelContract.timeIndex ||
@@ -533,24 +1103,29 @@ export function buildOptimizationDssModel({
       0
   ) {
     throw new Error(
-      OPTIMIZATION_DSS_MODEL_BUILD_REASON.INVALID_TIME_INDEX
+      OPTIMIZATION_DSS_MODEL_BUILD_REASON
+        .INVALID_TIME_INDEX
     );
   }
+
 
   const variables =
     buildExpandedVariables(
       modelContract
     );
 
+
   const objectiveRows =
     buildObjectiveRows(
       modelContract
     );
 
+
   const constraintRows =
     buildConstraintRows(
       modelContract
     );
+
 
   return Object.freeze({
     phase:
@@ -625,3 +1200,7 @@ export function buildOptimizationDssModel({
       OPTIMIZATION_DSS_MODEL_BUILD_BOUNDARIES,
   });
 }
+
+
+export default
+  buildOptimizationDssModel;

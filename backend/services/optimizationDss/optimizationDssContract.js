@@ -16,10 +16,21 @@ export const OPTIMIZATION_DSS_OBJECTIVE_KIND = Object.freeze({
 
 export const OPTIMIZATION_DSS_DECISION_VARIABLE_KIND = Object.freeze({
   GRID_POWER: "GRID_POWER",
-  BATTERY_CHARGE_POWER: "BATTERY_CHARGE_POWER",
-  BATTERY_DISCHARGE_POWER: "BATTERY_DISCHARGE_POWER",
-  GENERATOR_POWER: "GENERATOR_POWER",
-  LOAD_SHED_POWER: "LOAD_SHED_POWER",
+
+  BATTERY_CHARGE_POWER:
+    "BATTERY_CHARGE_POWER",
+
+  BATTERY_DISCHARGE_POWER:
+    "BATTERY_DISCHARGE_POWER",
+
+  BATTERY_SOC:
+    "BATTERY_SOC",
+
+  GENERATOR_POWER:
+    "GENERATOR_POWER",
+
+  LOAD_SHED_POWER:
+    "LOAD_SHED_POWER",
 });
 
 export const OPTIMIZATION_DSS_CONSTRAINT_KIND = Object.freeze({
@@ -160,9 +171,9 @@ export function buildOptimizationDssObjective({
       sourceMetricName === null
         ? null
         : requireNonEmptyString(
-            sourceMetricName,
-            "OBJECTIVE_SOURCE_METRIC"
-          ),
+          sourceMetricName,
+          "OBJECTIVE_SOURCE_METRIC"
+        ),
     evaluated: false,
     value: null,
   });
@@ -215,6 +226,8 @@ export function buildOptimizationDssConstraint({
   kind,
   required = true,
   parameters = {},
+  sourceMetricNames = [],
+  evidenceContracts = [],
 } = {}) {
   requireControlled(
     kind,
@@ -222,17 +235,149 @@ export function buildOptimizationDssConstraint({
     "CONSTRAINT_KIND"
   );
 
-  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
-    throw new Error("CONSTRAINT_PARAMETERS_INVALID");
+  if (
+    !parameters ||
+    typeof parameters !== "object" ||
+    Array.isArray(parameters)
+  ) {
+    throw new Error(
+      "CONSTRAINT_PARAMETERS_INVALID"
+    );
+  }
+
+  if (
+    !Array.isArray(sourceMetricNames)
+  ) {
+    throw new Error(
+      "CONSTRAINT_SOURCE_METRICS_INVALID"
+    );
+  }
+
+  if (
+    !Array.isArray(evidenceContracts)
+  ) {
+    throw new Error(
+      "CONSTRAINT_EVIDENCE_CONTRACTS_INVALID"
+    );
+  }
+
+  const normalizedSourceMetricNames =
+    sourceMetricNames.map(
+      metricName =>
+        requireNonEmptyString(
+          metricName,
+          "CONSTRAINT_SOURCE_METRIC"
+        )
+    );
+
+  if (
+    new Set(
+      normalizedSourceMetricNames
+    ).size !==
+    normalizedSourceMetricNames.length
+  ) {
+    throw new Error(
+      "CONSTRAINT_SOURCE_METRIC_DUPLICATE"
+    );
+  }
+
+  const normalizedEvidenceContracts =
+    evidenceContracts.map(
+      (
+        evidenceContract,
+        index
+      ) => {
+        if (
+          !evidenceContract ||
+          typeof evidenceContract !== "object" ||
+          Array.isArray(evidenceContract)
+        ) {
+          throw new Error(
+            "CONSTRAINT_EVIDENCE_CONTRACT_INVALID"
+          );
+        }
+
+        const metricName =
+          requireNonEmptyString(
+            evidenceContract.metricName,
+            `CONSTRAINT_EVIDENCE_METRIC_${index}`
+          );
+
+        const unit =
+          evidenceContract.unit === null ||
+            evidenceContract.unit === undefined
+            ? null
+            : requireNonEmptyString(
+              evidenceContract.unit,
+              `CONSTRAINT_EVIDENCE_UNIT_${index}`
+            );
+
+        const currency =
+          evidenceContract.currency === null ||
+            evidenceContract.currency === undefined
+            ? null
+            : requireNonEmptyString(
+              evidenceContract.currency,
+              `CONSTRAINT_EVIDENCE_CURRENCY_${index}`
+            );
+
+        return Object.freeze({
+          metricName,
+          unit,
+          currency,
+        });
+      }
+    );
+
+  const evidenceMetricNames =
+    normalizedEvidenceContracts.map(
+      item =>
+        item.metricName
+    );
+
+  if (
+    new Set(
+      evidenceMetricNames
+    ).size !==
+    evidenceMetricNames.length
+  ) {
+    throw new Error(
+      "CONSTRAINT_EVIDENCE_METRIC_DUPLICATE"
+    );
   }
 
   return Object.freeze({
-    name: requireNonEmptyString(name, "CONSTRAINT_NAME"),
+    name:
+      requireNonEmptyString(
+        name,
+        "CONSTRAINT_NAME"
+      ),
+
     kind,
-    required: Boolean(required),
-    parameters: Object.freeze({ ...parameters }),
-    evaluated: false,
-    satisfied: null,
+
+    required:
+      Boolean(required),
+
+    parameters:
+      Object.freeze({
+        ...parameters,
+      }),
+
+    sourceMetricNames:
+      Object.freeze([
+        ...normalizedSourceMetricNames,
+      ]),
+
+    evidenceContracts:
+      Object.freeze([
+        ...normalizedEvidenceContracts,
+      ]),
+
+    evaluated:
+      false,
+
+    satisfied:
+      null,
   });
 }
 

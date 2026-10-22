@@ -42,6 +42,7 @@ function normalizeAuthorizedVrmSiteIds(
     ];
 }
 
+
 export function buildMongoFilter(
     filters = {}
 ) {
@@ -227,7 +228,6 @@ export function buildMongoFilter(
 
     return mongo;
 }
-
 
 export const mongooseFinancialBiReadRepository =
     Object.freeze({

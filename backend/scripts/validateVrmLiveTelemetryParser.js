@@ -1,4 +1,4 @@
-﻿import {
+import {
     LIVE_TELEMETRY_MAPPINGS,
     findLiveTelemetryMapping,
 } from "../services/vrm/vrmLiveTelemetryMapping.js";
@@ -51,8 +51,8 @@ console.log(
 
 check(
     LIVE_TELEMETRY_MAPPINGS.length ===
-    28,
-    "exactly 28 evidence-backed live mappings are configured"
+        42,
+    "exactly 42 unique live telemetry mappings are configured"
 );
 
 const generatorPower =

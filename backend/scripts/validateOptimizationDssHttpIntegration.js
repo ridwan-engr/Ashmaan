@@ -1,4 +1,5 @@
-// scripts/validateOptimizationDssHttpIntegration.js
+
+ // scripts/validateOptimizationDssHttpIntegration.js
 // Post-Phase-11 Runtime Integration Checkpoint A
 // Purpose: prove server mount + live HTTP reachability only.
 // This is NOT Phase 12 and does not alter Optimization/DSS semantics.
@@ -20,8 +21,7 @@ const routesPath = path.join(
 );
 
 const baseUrl = (
-  process.env.ASHMAAN_API_BASE_URL ||
-  "http://localhost:5000"
+  process.env.ASHMAAN_API_BASE_URL || "http://localhost:5000"
 ).replace(/\/+$/, "");
 
 let assertions = 0;
@@ -36,6 +36,7 @@ function readRequired(filePath, label) {
     fs.existsSync(filePath),
     `${label} missing: ${filePath}`
   );
+
   return fs.readFileSync(filePath, "utf8");
 }
 
@@ -62,6 +63,7 @@ const routesSource = normalizeSource(
 );
 pass("Optimization/DSS route module exists");
 
+// Verify that the list and detail endpoints remain GET-only.
 assert.match(
   routesSource,
   /router\.get\s*\(\s*["']\/recommendations["']/
@@ -74,12 +76,14 @@ assert.match(
 );
 pass("Optimization/DSS detail route remains GET-only");
 
+// The route module must not expose mutation endpoints.
 assert.doesNotMatch(
   routesSource,
   /router\.(?:post|put|patch|delete)\s*\(/i
 );
 pass("Optimization/DSS route module exposes no mutation endpoint");
 
+// Find the router import in server.js.
 const importPattern =
   /import\s+([A-Za-z_$][\w$]*)\s+from\s+["']\.\/routes\/optimizationDssRoutes\.js["']\s*;?/;
 
@@ -89,7 +93,7 @@ assert.ok(
   importMatch,
   [
     "server.js does not import ./routes/optimizationDssRoutes.js.",
-    "Add:",
+    "Expected an import such as:",
     'import optimizationDssRoutes from "./routes/optimizationDssRoutes.js";',
   ].join("\n")
 );
@@ -97,35 +101,50 @@ assert.ok(
 const routerIdentifier = importMatch[1];
 pass("server.js imports Optimization/DSS router");
 
+// Escape the imported identifier before using it in a regular expression.
 const escapedIdentifier = routerIdentifier.replace(
   /[.*+?^${}()|[\]\\]/g,
   "\\$&"
 );
 
+// Accept either a direct mount or the existing protected mount:
+//
+// app.use(
+//   "/api/optimization-dss",
+//   authenticatePortalAccessToken,
+//   requireActivePortalSession,
+//   requireOptimizationDssRead,
+//   optimizationDssRoutes
+// );
+//
+// Do not remove or bypass any middleware from server.js.
 const mountPattern = new RegExp(
-  String.raw`app\.use\s*\(\s*["']\/api\/optimization-dss["']\s*,\s*${escapedIdentifier}\s*\)`
+  String.raw`app\.use\s*\(\s*["']\/api\/optimization-dss["']\s*,\s*(?:authenticatePortalAccessToken\s*,\s*requireActivePortalSession\s*,\s*requireOptimizationDssRead\s*,\s*)?${escapedIdentifier}\s*\)`
 );
 
 assert.match(
   serverSource,
   mountPattern,
   [
-    "server.js does not mount Optimization/DSS router at /api/optimization-dss.",
+    "server.js does not mount Optimization/DSS at /api/optimization-dss.",
     `Imported router identifier: ${routerIdentifier}`,
-    "Add:",
-    `app.use("/api/optimization-dss", ${routerIdentifier});`,
+    "Expected a direct mount or the existing middleware-protected mount.",
   ].join("\n")
 );
-pass("server.js mounts Optimization/DSS at /api/optimization-dss");
 
+pass(
+  "server.js mounts Optimization/DSS at /api/optimization-dss, including the supported middleware-protected mount"
+);
+
+// Confirm that server.js does not introduce mutation endpoints for this API.
 assert.doesNotMatch(
   serverSource,
-  /app\.(?:post|put|patch|delete)\s*\(\s*["']\/api\/optimization-dss/i
+  /app\.(?:post|put|patch|delete)\s*\(\s*["']\/api\/optimization-dss(?:\/|["'])/i
 );
 pass("server.js introduces no Optimization/DSS mutation endpoint");
 
-const url =
-  `${baseUrl}${LIST_PATH}?page=1&limit=1`;
+// Check live HTTP reachability.
+const url = `${baseUrl}${LIST_PATH}?page=1&limit=1`;
 
 let response;
 let bodyText;
@@ -144,7 +163,7 @@ try {
   throw new Error(
     [
       `Live HTTP request failed: GET ${url}`,
-      "Start ASHMAAN backend in another terminal with: npm run dev",
+      "Start the ASHMAAN backend in another terminal with: npm run dev",
       `Cause: ${error instanceof Error ? error.message : String(error)}`,
     ].join("\n")
   );
@@ -161,9 +180,12 @@ assert.ok(
   [200, 400, 401, 403, 503].includes(response.status),
   `Unexpected HTTP status ${response.status} from ${url}`
 );
-pass(`live Optimization/DSS endpoint responds through HTTP (${response.status})`);
+pass(
+  `live Optimization/DSS endpoint responds through HTTP (${response.status})`
+);
 
 let payload = null;
+
 try {
   payload = bodyText ? JSON.parse(bodyText) : null;
 } catch {
@@ -193,22 +215,22 @@ if ([200, 400, 503].includes(response.status)) {
 
   assert.ok(
     ["OK", "INVALID_REQUEST", "UNAVAILABLE"].includes(payload.status),
-    `unexpected API envelope status: ${payload.status}`
+    `Unexpected API envelope status: ${payload.status}`
   );
   pass(`live API envelope status is controlled (${payload.status})`);
 } else {
   console.log(
-    `INFO: HTTP ${response.status} indicates upstream auth/security middleware intercepted the request before the Optimization/DSS controller.`
+    `INFO: HTTP ${response.status} indicates upstream authentication/security middleware may have intercepted the request before the Optimization/DSS controller.`
   );
   console.log(
-    "INFO: The route is live, but controller-envelope validation is not established by this run."
+    "INFO: Route reachability is established, but controller-envelope validation is not established by this run."
   );
 }
 
 assert.equal(
   assertions >= 10,
   true,
-  "expected at least 10 integration assertions"
+  "Expected at least 10 integration assertions"
 );
 pass("HTTP integration assertion plan completed");
 

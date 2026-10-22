@@ -38,6 +38,9 @@ export const RBAC_PERMISSIONS = Object.freeze({
   READ_OPTIMIZATION_DSS:
     "READ_OPTIMIZATION_DSS",
 
+  MANAGE_OPTIMIZATION_DSS:
+    "MANAGE_OPTIMIZATION_DSS",
+
   MANAGE_USERS:
     "MANAGE_USERS",
 
@@ -121,6 +124,7 @@ export const DEFAULT_ROLE_PERMISSION_MAP =
         RBAC_PERMISSIONS.READ_FORECASTING,
         RBAC_PERMISSIONS.READ_FINANCIAL_BI,
         RBAC_PERMISSIONS.READ_OPTIMIZATION_DSS,
+        RBAC_PERMISSIONS.MANAGE_OPTIMIZATION_DSS,
         RBAC_PERMISSIONS.MANAGE_USERS,
         RBAC_PERMISSIONS.MANAGE_SECURITY,
         RBAC_PERMISSIONS.READ_AUDIT_LOG,
@@ -235,7 +239,7 @@ export function getPermissionsForRole(
 
   const permissions =
     rolePermissionMap[
-      normalizedRole
+    normalizedRole
     ];
 
   if (!Array.isArray(permissions)) {
@@ -289,15 +293,15 @@ export function createAuthorizationResult({
     permission:
       permission
         ? normalizePermission(
-            permission
-          )
+          permission
+        )
         : null,
 
     reason:
       allowed
         ? null
         : reason ??
-          AUTHORIZATION_DENIAL_REASON.PERMISSION_DENIED,
+        AUTHORIZATION_DENIAL_REASON.PERMISSION_DENIED,
 
     executableControlGranted:
       false,
@@ -320,7 +324,7 @@ export function authorizePermission({
   permission,
   authorizationAvailable = true,
   rolePermissionMap =
-    DEFAULT_ROLE_PERMISSION_MAP,
+  DEFAULT_ROLE_PERMISSION_MAP,
 } = {}) {
   if (
     authorizationAvailable !==
@@ -464,7 +468,7 @@ export function authorizePermission({
       granted
         ? null
         : AUTHORIZATION_DENIAL_REASON
-            .PERMISSION_DENIED,
+          .PERMISSION_DENIED,
   });
 }
 

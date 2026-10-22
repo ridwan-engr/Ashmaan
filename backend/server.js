@@ -7,7 +7,8 @@ import http from "node:http";
 
 import env from "./config/env.js";
 import connectDatabase from "./config/database.js";
-
+import optimizationDssConfigurationRoutes
+  from "./routes/optimizationDssConfigurationRoutes.js";
 import apiRoutes from "./routes/index.js";
 import dashboardRoutes
   from "./routes/dashboardRoutes.js";
@@ -309,6 +310,32 @@ app.use(
   reliabilityRoutes
 );
 
+/*
+|--------------------------------------------------------------------------
+| Optimization/DSS configuration
+|--------------------------------------------------------------------------
+|
+| Authentication and active-session validation occur here.
+|
+| Route-level middleware separately enforces:
+|
+| - READ_OPTIMIZATION_DSS for configuration reads
+| - MANAGE_OPTIMIZATION_DSS for configuration writes
+| - explicit installation ACL for both
+|
+| This surface configures advisory optimization constraints only.
+| It does not grant equipment control or automatic dispatch.
+|
+|--------------------------------------------------------------------------
+*/
+
+app.use(
+  "/api/v1/optimization-dss",
+  authenticatePortalAccessToken,
+  requireActivePortalSession,
+  optimizationDssConfigurationRoutes
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -543,31 +570,63 @@ const startServer =
         `[VRM MQTT Fleet] Starting with bounded concurrency ${env.vrm.liveFleetStartupConcurrency}; scope=${liveFleetScope}...`
       );
 
-      const fleetStartResult =
-        await startVrmLiveFleet({
-          siteIds:
-            env.vrm.liveFleetSiteIds,
+      /*
+       * VRM live telemetry is an external integration.
+       *
+       * A temporary VRM API/MQTT failure must not prevent the
+       * ASHMAAN HTTP API, database, scheduler, or Socket.IO
+       * transport from starting.
+       *
+       * startVrmLiveFleet() already isolates normal per-site
+       * failures in its returned result. This outer boundary
+       * handles failures that occur before a fleet result can
+       * be returned at all.
+       */
+      try {
+        const fleetStartResult =
+          await startVrmLiveFleet({
+            siteIds:
+              env.vrm.liveFleetSiteIds,
 
-          concurrency:
-            env.vrm.liveFleetStartupConcurrency,
-        });
+            concurrency:
+              env.vrm.liveFleetStartupConcurrency,
+          });
 
+        const fleetState =
+          getVrmLiveFleetState();
 
-      const fleetState =
-        getVrmLiveFleetState();
+        console.log(
+          `[VRM MQTT Fleet] Startup complete: selected=${fleetStartResult.selectedSiteCount}, started=${fleetStartResult.startedCount}, failed=${fleetStartResult.failedCount}, connected=${fleetState.connectedCount}`
+        );
 
-
-      console.log(
-        `[VRM MQTT Fleet] Startup complete: selected=${fleetStartResult.selectedSiteCount}, started=${fleetStartResult.startedCount}, failed=${fleetStartResult.failedCount}, connected=${fleetState.connectedCount}`
-      );
-
-
-      if (
-        fleetStartResult.failedCount >
-        0
+        if (
+          fleetStartResult.failedCount >
+          0
+        ) {
+          console.warn(
+            `[VRM MQTT Fleet] ${fleetStartResult.failedCount} site(s) failed isolated startup.`
+          );
+        }
+      } catch (
+      fleetError
       ) {
+        /*
+         * Degraded startup:
+         *
+         * Keep ASHMAAN available even when VRM cannot be
+         * reached during process initialization.
+         */
+        console.error(
+          `[VRM MQTT Fleet] Startup degraded: ${fleetError instanceof Error
+            ? fleetError.message
+            : String(
+              fleetError
+            )
+          }`
+        );
+
         console.warn(
-          `[VRM MQTT Fleet] ${fleetStartResult.failedCount} site(s) failed isolated startup.`
+          "[VRM MQTT Fleet] Backend will continue without fully initialized live VRM telemetry."
         );
       }
     } else {
@@ -575,7 +634,6 @@ const startServer =
         "[VRM MQTT Fleet] Disabled by configuration."
       );
     }
-
 
     /*
     |--------------------------------------------------------------------------

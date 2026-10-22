@@ -52,6 +52,18 @@ export const OPTIMIZATION_DSS_OBJECTIVE_SENSE =
       "MAXIMIZE",
   });
 
+export const OPTIMIZATION_DSS_CONSTRAINT_OPERATOR =
+  Object.freeze({
+    EQUAL:
+      "EQUAL",
+
+    LESS_THAN_OR_EQUAL:
+      "LESS_THAN_OR_EQUAL",
+
+    GREATER_THAN_OR_EQUAL:
+      "GREATER_THAN_OR_EQUAL",
+  });
+
 
 export const OPTIMIZATION_DSS_MODEL_BOUNDARIES =
   Object.freeze({
@@ -141,7 +153,7 @@ function requireNonEmptyString(
 ) {
   if (
     typeof value !==
-      "string" ||
+    "string" ||
     !value.trim()
   ) {
     throw new Error(
@@ -159,7 +171,7 @@ function requireFiniteNumber(
 ) {
   if (
     typeof value !==
-      "number" ||
+    "number" ||
     !Number.isFinite(
       value
     )
@@ -204,7 +216,7 @@ export function buildOptimizationTimeIndex({
       timestamps
     ) ||
     timestamps.length ===
-      0
+    0
   ) {
     throw new Error(
       "TIME_INDEX_TIMESTAMPS_REQUIRED"
@@ -227,7 +239,7 @@ export function buildOptimizationTimeIndex({
 
   if (
     unique.size !==
-      normalized.length
+    normalized.length
   ) {
     throw new Error(
       "TIME_INDEX_DUPLICATE_TIMESTAMP"
@@ -238,9 +250,9 @@ export function buildOptimizationTimeIndex({
     let index =
       1;
     index <
-      normalized.length;
+    normalized.length;
     index +=
-      1
+    1
   ) {
     if (
       new Date(
@@ -315,9 +327,9 @@ export function buildOptimizationObjectiveTerm({
 
   if (
     variableName ===
-      null &&
+    null &&
     evidenceMetricName ===
-      null
+    null
   ) {
     throw new Error(
       "OBJECTIVE_TERM_BINDING_REQUIRED"
@@ -342,36 +354,36 @@ export function buildOptimizationObjectiveTerm({
         null
         ? null
         : requireNonEmptyString(
-            unit,
-            "OBJECTIVE_TERM_UNIT"
-          ),
+          unit,
+          "OBJECTIVE_TERM_UNIT"
+        ),
 
     currency:
       currency ===
         null
         ? null
         : requireNonEmptyString(
-            currency,
-            "OBJECTIVE_TERM_CURRENCY"
-          ),
+          currency,
+          "OBJECTIVE_TERM_CURRENCY"
+        ),
 
     variableName:
       variableName ===
         null
         ? null
         : requireNonEmptyString(
-            variableName,
-            "OBJECTIVE_TERM_VARIABLE"
-          ),
+          variableName,
+          "OBJECTIVE_TERM_VARIABLE"
+        ),
 
     evidenceMetricName:
       evidenceMetricName ===
         null
         ? null
         : requireNonEmptyString(
-            evidenceMetricName,
-            "OBJECTIVE_TERM_EVIDENCE_METRIC"
-          ),
+          evidenceMetricName,
+          "OBJECTIVE_TERM_EVIDENCE_METRIC"
+        ),
 
     evaluated:
       false,
@@ -389,6 +401,7 @@ export function buildOptimizationVariableBinding({
   lowerBound,
   upperBound,
   timeIndexed = true,
+  timestamps = null,
 } = {}) {
   if (
     !Object.values(
@@ -414,11 +427,88 @@ export function buildOptimizationVariableBinding({
 
   if (
     upperBound <
-      lowerBound
+    lowerBound
   ) {
     throw new Error(
       "VARIABLE_BINDING_RANGE_INVALID"
     );
+  }
+
+  const normalizedTimeIndexed =
+    Boolean(
+      timeIndexed
+    );
+
+  let normalizedTimestamps =
+    null;
+
+  if (
+    timestamps !==
+    null
+  ) {
+    if (
+      !normalizedTimeIndexed
+    ) {
+      throw new Error(
+        "VARIABLE_BINDING_TIMESTAMPS_REQUIRE_TIME_INDEX"
+      );
+    }
+
+    if (
+      !Array.isArray(
+        timestamps
+      ) ||
+      timestamps.length ===
+      0
+    ) {
+      throw new Error(
+        "VARIABLE_BINDING_TIMESTAMPS_INVALID"
+      );
+    }
+
+    normalizedTimestamps =
+      timestamps.map(
+        timestamp =>
+          normalizeTimestamp(
+            timestamp,
+            "VARIABLE_BINDING_TIMESTAMP"
+          )
+      );
+
+    if (
+      new Set(
+        normalizedTimestamps
+      ).size !==
+      normalizedTimestamps.length
+    ) {
+      throw new Error(
+        "VARIABLE_BINDING_TIMESTAMP_DUPLICATE"
+      );
+    }
+
+    for (
+      let index = 1;
+      index <
+      normalizedTimestamps.length;
+      index += 1
+    ) {
+      if (
+        new Date(
+          normalizedTimestamps[
+          index
+          ]
+        ) <=
+        new Date(
+          normalizedTimestamps[
+          index - 1
+          ]
+        )
+      ) {
+        throw new Error(
+          "VARIABLE_BINDING_TIMESTAMPS_NOT_STRICTLY_ASCENDING"
+        );
+      }
+    }
   }
 
   return Object.freeze({
@@ -441,9 +531,15 @@ export function buildOptimizationVariableBinding({
     upperBound,
 
     timeIndexed:
-      Boolean(
-        timeIndexed
-      ),
+      normalizedTimeIndexed,
+
+    timestamps:
+      normalizedTimestamps ===
+        null
+        ? null
+        : Object.freeze([
+          ...normalizedTimestamps,
+        ]),
 
     values:
       null,
@@ -461,7 +557,27 @@ export function buildOptimizationConstraintBinding({
   evidenceMetricNames = [],
   parameters = {},
   required = true,
+  coefficients = null,
+  variableTerms = null,
+  operator = null,
+  rightHandSide = null,
+  rightHandSideEvidenceMetricName = null,
+  timestamps = null,
 } = {}) {
+
+  /*
+  |--------------------------------------------------------------------------
+  | Constraint identity
+  |--------------------------------------------------------------------------
+  */
+
+  const normalizedName =
+    requireNonEmptyString(
+      name,
+      "CONSTRAINT_BINDING_NAME"
+    );
+
+
   if (
     !Object.values(
       OPTIMIZATION_DSS_CONSTRAINT_KIND
@@ -473,6 +589,13 @@ export function buildOptimizationConstraintBinding({
       "CONSTRAINT_BINDING_KIND_INVALID"
     );
   }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Declared variables
+  |--------------------------------------------------------------------------
+  */
 
   if (
     !Array.isArray(
@@ -486,6 +609,35 @@ export function buildOptimizationConstraintBinding({
     );
   }
 
+
+  const normalizedVariableNames =
+    variableNames.map(
+      variableName =>
+        requireNonEmptyString(
+          variableName,
+          "CONSTRAINT_BINDING_VARIABLE"
+        )
+    );
+
+
+  if (
+    new Set(
+      normalizedVariableNames
+    ).size !==
+      normalizedVariableNames.length
+  ) {
+    throw new Error(
+      "CONSTRAINT_BINDING_VARIABLE_DUPLICATE"
+    );
+  }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Evidence metrics
+  |--------------------------------------------------------------------------
+  */
+
   if (
     !Array.isArray(
       evidenceMetricNames
@@ -495,6 +647,35 @@ export function buildOptimizationConstraintBinding({
       "CONSTRAINT_BINDING_EVIDENCE_ARRAY_REQUIRED"
     );
   }
+
+
+  const normalizedEvidenceMetricNames =
+    evidenceMetricNames.map(
+      metricName =>
+        requireNonEmptyString(
+          metricName,
+          "CONSTRAINT_BINDING_EVIDENCE_METRIC"
+        )
+    );
+
+
+  if (
+    new Set(
+      normalizedEvidenceMetricNames
+    ).size !==
+      normalizedEvidenceMetricNames.length
+  ) {
+    throw new Error(
+      "CONSTRAINT_BINDING_EVIDENCE_DUPLICATE"
+    );
+  }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Parameters
+  |--------------------------------------------------------------------------
+  */
 
   if (
     !parameters ||
@@ -509,23 +690,442 @@ export function buildOptimizationConstraintBinding({
     );
   }
 
+
+  /*
+  |--------------------------------------------------------------------------
+  | Constraint-specific timestamps
+  |--------------------------------------------------------------------------
+  |
+  | A constraint may optionally apply to only a subset of the model time
+  | index.
+  |
+  | Example:
+  |
+  |   batteryInitialSoc -> first dispatch timestamp only
+  |
+  | This is intentionally independent of variableTerms so timestamp scope
+  | is available to both legacy coefficient constraints and cross-time
+  | constraints.
+  |
+  */
+
+  let normalizedTimestamps =
+    null;
+
+
+  if (
+    timestamps !==
+      null
+  ) {
+    if (
+      !Array.isArray(
+        timestamps
+      ) ||
+      timestamps.length ===
+        0
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_TIMESTAMPS_INVALID"
+      );
+    }
+
+
+    normalizedTimestamps =
+      timestamps.map(
+        timestamp =>
+          normalizeTimestamp(
+            timestamp,
+            "CONSTRAINT_BINDING_TIMESTAMP"
+          )
+      );
+
+
+    if (
+      new Set(
+        normalizedTimestamps
+      ).size !==
+        normalizedTimestamps.length
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_TIMESTAMP_DUPLICATE"
+      );
+    }
+
+
+    for (
+      let index = 1;
+      index <
+        normalizedTimestamps.length;
+      index += 1
+    ) {
+      if (
+        new Date(
+          normalizedTimestamps[
+            index
+          ]
+        ).getTime() <=
+        new Date(
+          normalizedTimestamps[
+            index - 1
+          ]
+        ).getTime()
+      ) {
+        throw new Error(
+          "CONSTRAINT_BINDING_TIMESTAMPS_NOT_STRICTLY_ASCENDING"
+        );
+      }
+    }
+  }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Cross-time variable terms
+  |--------------------------------------------------------------------------
+  |
+  | variableTerms is the algebraic representation required for constraints
+  | such as:
+  |
+  |   SOC[t+1]
+  |   - SOC[t]
+  |   - chargeFactor * Pcharge[t]
+  |   + dischargeFactor * Pdischarge[t]
+  |   = 0
+  |
+  */
+
+  let normalizedVariableTerms =
+    null;
+
+
+  if (
+    variableTerms !==
+      null
+  ) {
+    if (
+      !Array.isArray(
+        variableTerms
+      ) ||
+      variableTerms.length ===
+        0
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_VARIABLE_TERMS_INVALID"
+      );
+    }
+
+
+    normalizedVariableTerms =
+      variableTerms.map(
+        (
+          term,
+          index
+        ) => {
+
+          if (
+            !term ||
+            typeof term !==
+              "object" ||
+            Array.isArray(
+              term
+            )
+          ) {
+            throw new Error(
+              "CONSTRAINT_BINDING_VARIABLE_TERM_INVALID"
+            );
+          }
+
+
+          const variableName =
+            requireNonEmptyString(
+              term.variableName,
+              `CONSTRAINT_BINDING_VARIABLE_TERM_${index}`
+            );
+
+
+          if (
+            !normalizedVariableNames.includes(
+              variableName
+            )
+          ) {
+            throw new Error(
+              "CONSTRAINT_BINDING_VARIABLE_TERM_NOT_DECLARED"
+            );
+          }
+
+
+          const timeOffset =
+            term.timeOffset ??
+            0;
+
+
+          if (
+            !Number.isInteger(
+              timeOffset
+            )
+          ) {
+            throw new Error(
+              "CONSTRAINT_BINDING_VARIABLE_TERM_TIME_OFFSET_INVALID"
+            );
+          }
+
+
+          const coefficient =
+            requireFiniteNumber(
+              term.coefficient,
+              "CONSTRAINT_BINDING_VARIABLE_TERM_COEFFICIENT"
+            );
+
+
+          return Object.freeze({
+            variableName,
+            timeOffset,
+            coefficient,
+          });
+        }
+      );
+  }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Algebraic representation
+  |--------------------------------------------------------------------------
+  |
+  | Two variable-expression modes are supported:
+  |
+  | 1. Legacy same-time mode
+  |
+  |    coefficients[i] * variableNames[i]
+  |
+  | 2. Cross-time mode
+  |
+  |    variableTerms:
+  |      {
+  |        variableName,
+  |        timeOffset,
+  |        coefficient
+  |      }
+  |
+  | Exactly one mode must be supplied for an algebraic constraint.
+  |
+  | RHS must also use exactly one source:
+  |
+  |   - explicit finite rightHandSide
+  |   - rightHandSideEvidenceMetricName
+  |
+  */
+
+  const algebraicRequested =
+    coefficients !==
+      null ||
+    variableTerms !==
+      null ||
+    operator !==
+      null ||
+    rightHandSide !==
+      null ||
+    rightHandSideEvidenceMetricName !==
+      null;
+
+
+  let normalizedCoefficients =
+    null;
+
+  let normalizedOperator =
+    null;
+
+  let normalizedRightHandSide =
+    null;
+
+  let normalizedRightHandSideEvidenceMetricName =
+    null;
+
+
+  if (
+    algebraicRequested
+  ) {
+
+    /*
+     * Determine which variable-expression mode
+     * has been requested.
+     */
+
+    const usesVariableTerms =
+      normalizedVariableTerms !==
+      null;
+
+    const usesLegacyCoefficients =
+      coefficients !==
+      null;
+
+
+    /*
+     * Exactly one representation must be used.
+     *
+     * true / true  -> invalid
+     * false / false -> invalid
+     * true / false -> valid
+     * false / true -> valid
+     */
+
+    if (
+      usesVariableTerms ===
+        usesLegacyCoefficients
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_ALGEBRAIC_VARIABLE_MODE_INVALID"
+      );
+    }
+
+
+    /*
+     * Legacy coefficient representation.
+     */
+
+    if (
+      usesLegacyCoefficients
+    ) {
+      if (
+        !Array.isArray(
+          coefficients
+        ) ||
+        coefficients.length !==
+          normalizedVariableNames.length
+      ) {
+        throw new Error(
+          "CONSTRAINT_BINDING_COEFFICIENTS_INVALID"
+        );
+      }
+
+
+      normalizedCoefficients =
+        coefficients.map(
+          coefficient =>
+            requireFiniteNumber(
+              coefficient,
+              "CONSTRAINT_BINDING_COEFFICIENT"
+            )
+        );
+    }
+
+
+    /*
+     * Operator is mandatory for every
+     * algebraic constraint.
+     */
+
+    if (
+      !Object.values(
+        OPTIMIZATION_DSS_CONSTRAINT_OPERATOR
+      ).includes(
+        operator
+      )
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_OPERATOR_INVALID"
+      );
+    }
+
+
+    normalizedOperator =
+      operator;
+
+
+    /*
+     * RHS mode.
+     */
+
+    const hasExplicitRightHandSide =
+      rightHandSide !==
+      null;
+
+    const hasEvidenceRightHandSide =
+      rightHandSideEvidenceMetricName !==
+      null;
+
+
+    /*
+     * Exactly one RHS source must exist.
+     */
+
+    if (
+      hasExplicitRightHandSide ===
+        hasEvidenceRightHandSide
+    ) {
+      throw new Error(
+        "CONSTRAINT_BINDING_RHS_MODE_INVALID"
+      );
+    }
+
+
+    /*
+     * Explicit numerical RHS.
+     */
+
+    if (
+      hasExplicitRightHandSide
+    ) {
+      normalizedRightHandSide =
+        requireFiniteNumber(
+          rightHandSide,
+          "CONSTRAINT_BINDING_RHS"
+        );
+    }
+
+
+    /*
+     * Evidence-backed RHS.
+     */
+
+    if (
+      hasEvidenceRightHandSide
+    ) {
+      normalizedRightHandSideEvidenceMetricName =
+        requireNonEmptyString(
+          rightHandSideEvidenceMetricName,
+          "CONSTRAINT_BINDING_RHS_EVIDENCE_METRIC"
+        );
+
+
+      /*
+       * Evidence used as RHS must already be
+       * declared in evidenceMetricNames.
+       */
+
+      if (
+        !normalizedEvidenceMetricNames.includes(
+          normalizedRightHandSideEvidenceMetricName
+        )
+      ) {
+        throw new Error(
+          "CONSTRAINT_BINDING_RHS_EVIDENCE_NOT_DECLARED"
+        );
+      }
+    }
+  }
+
+
+  /*
+  |--------------------------------------------------------------------------
+  | Immutable contract
+  |--------------------------------------------------------------------------
+  */
+
   return Object.freeze({
     name:
-      requireNonEmptyString(
-        name,
-        "CONSTRAINT_BINDING_NAME"
-      ),
+      normalizedName,
 
     constraintKind,
 
     variableNames:
       Object.freeze([
-        ...variableNames,
+        ...normalizedVariableNames,
       ]),
 
     evidenceMetricNames:
       Object.freeze([
-        ...evidenceMetricNames,
+        ...normalizedEvidenceMetricNames,
       ]),
 
     parameters:
@@ -538,6 +1138,47 @@ export function buildOptimizationConstraintBinding({
         required
       ),
 
+    timestamps:
+      normalizedTimestamps ===
+        null
+        ? null
+        : Object.freeze([
+            ...normalizedTimestamps,
+          ]),
+
+    algebraic:
+      algebraicRequested,
+
+    coefficients:
+      normalizedCoefficients ===
+        null
+        ? null
+        : Object.freeze([
+            ...normalizedCoefficients,
+          ]),
+
+    variableTerms:
+      normalizedVariableTerms ===
+        null
+        ? null
+        : Object.freeze(
+            normalizedVariableTerms.map(
+              term =>
+                Object.freeze({
+                  ...term,
+                })
+            )
+          ),
+
+    operator:
+      normalizedOperator,
+
+    rightHandSide:
+      normalizedRightHandSide,
+
+    rightHandSideEvidenceMetricName:
+      normalizedRightHandSideEvidenceMetricName,
+
     evaluated:
       false,
 
@@ -545,7 +1186,6 @@ export function buildOptimizationConstraintBinding({
       null,
   });
 }
-
 
 export function createOptimizationDssModelContract({
   optimizationContract,
@@ -558,9 +1198,9 @@ export function createOptimizationDssModelContract({
   if (
     !optimizationContract ||
     optimizationContract.phase !==
-      OPTIMIZATION_DSS_CONTRACT_PHASE ||
+    OPTIMIZATION_DSS_CONTRACT_PHASE ||
     optimizationContract.layer !==
-      OPTIMIZATION_DSS_CONTRACT_LAYER
+    OPTIMIZATION_DSS_CONTRACT_LAYER
   ) {
     throw new Error(
       "OPTIMIZATION_CONTRACT_INVALID"
@@ -570,9 +1210,9 @@ export function createOptimizationDssModelContract({
   if (
     !qualifiedInputs ||
     qualifiedInputs.phase !==
-      OPTIMIZATION_DSS_INPUT_QUALIFICATION_PHASE ||
+    OPTIMIZATION_DSS_INPUT_QUALIFICATION_PHASE ||
     qualifiedInputs.contract !==
-      optimizationContract
+    optimizationContract
   ) {
     throw new Error(
       "QUALIFIED_INPUTS_INVALID"
@@ -582,7 +1222,7 @@ export function createOptimizationDssModelContract({
   if (
     !timeIndex ||
     timeIndex.kind !==
-      OPTIMIZATION_DSS_TIME_INDEX_KIND.EXPLICIT_TIMESTAMPS
+    OPTIMIZATION_DSS_TIME_INDEX_KIND.EXPLICIT_TIMESTAMPS
   ) {
     throw new Error(
       "TIME_INDEX_INVALID"
@@ -594,7 +1234,7 @@ export function createOptimizationDssModelContract({
       variableBindings
     ) ||
     variableBindings.length ===
-      0
+    0
   ) {
     throw new Error(
       "VARIABLE_BINDINGS_REQUIRED"
@@ -606,7 +1246,7 @@ export function createOptimizationDssModelContract({
       objectiveTerms
     ) ||
     objectiveTerms.length ===
-      0
+    0
   ) {
     throw new Error(
       "OBJECTIVE_TERMS_REQUIRED"
@@ -618,7 +1258,7 @@ export function createOptimizationDssModelContract({
       constraintBindings
     ) ||
     constraintBindings.length ===
-      0
+    0
   ) {
     throw new Error(
       "CONSTRAINT_BINDINGS_REQUIRED"
@@ -635,7 +1275,7 @@ export function createOptimizationDssModelContract({
     new Set(
       variableNames
     ).size !==
-      variableNames.length
+    variableNames.length
   ) {
     throw new Error(
       "DUPLICATE_VARIABLE_BINDING_NAME"
@@ -652,7 +1292,7 @@ export function createOptimizationDssModelContract({
     new Set(
       objectiveNames
     ).size !==
-      objectiveNames.length
+    objectiveNames.length
   ) {
     throw new Error(
       "DUPLICATE_OBJECTIVE_TERM_NAME"
@@ -669,7 +1309,7 @@ export function createOptimizationDssModelContract({
     new Set(
       constraintNames
     ).size !==
-      constraintNames.length
+    constraintNames.length
   ) {
     throw new Error(
       "DUPLICATE_CONSTRAINT_BINDING_NAME"
@@ -687,7 +1327,7 @@ export function createOptimizationDssModelContract({
   ) {
     if (
       term.variableName !==
-        null &&
+      null &&
       !variableNameSet.has(
         term.variableName
       )

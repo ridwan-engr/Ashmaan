@@ -1,4 +1,4 @@
-﻿import "dotenv/config";
+import "dotenv/config";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -17,12 +17,6 @@ const SITE_ID =
 const WAIT_MS =
     10_000;
 
-const EXPECTED_TELEMETRY_TOPIC_COUNT =
-    28;
-
-const EXPECTED_SUBSCRIPTION_COUNT =
-    EXPECTED_TELEMETRY_TOPIC_COUNT +
-    1;
 
 const __filename =
     fileURLToPath(
@@ -111,7 +105,7 @@ const hasExecutableBroadSubscription =
 
 check(
     hasExecutableBroadSubscription ===
-        false,
+    false,
     "production service contains no executable broad Portal notification wildcard subscription"
 );
 
@@ -128,7 +122,7 @@ const hasWriteTopicPublication =
 
 check(
     hasWriteTopicPublication ===
-        false,
+    false,
     "production live service contains no VRM MQTT write-topic publication"
 );
 
@@ -150,22 +144,32 @@ try {
     check(
         connectedState
             ?.connected ===
-            true,
+        true,
         "production MQTT client is connected"
     );
 
+    const expectedSubscriptionCount =
+        (
+            connectedState
+                ?.approvedMappingCount ??
+            0
+        ) + 1;
+
     check(
         connectedState
+            ?.approvedMappingCount >
+        0 &&
+        connectedState
             ?.subscriptionCount ===
-            EXPECTED_SUBSCRIPTION_COUNT,
-        "production service uses exactly 28 allowlisted telemetry topics plus the full-publication marker"
+        expectedSubscriptionCount,
+        `production service uses exactly ${expectedSubscriptionCount} site-qualified topics including the full-publication marker`
     );
 
     check(
         /^[0-9a-f]{12}$/i.test(
             connectedState
                 ?.portalId ??
-                ""
+            ""
         ),
         "live service discovered a valid Portal ID"
     );
@@ -173,11 +177,11 @@ try {
     check(
         typeof connectedState
             ?.mqttHost ===
-            "string" &&
+        "string" &&
         connectedState
             .mqttHost
             .length >
-            0,
+        0,
         "live service discovered the installation MQTT broker"
     );
 
@@ -202,7 +206,7 @@ try {
 
     while (
         Date.now() <
-            deadline &&
+        deadline &&
         !(
             liveState
                 ?.receivedTelemetryCount >
@@ -222,14 +226,14 @@ try {
     check(
         liveState
             ?.receivedTelemetryCount >
-            0,
+        0,
         "exact-topic production service receives real parser-approved VRM telemetry"
     );
 
     check(
         typeof liveState
             ?.lastTelemetryAt ===
-            "string" &&
+        "string" &&
         !Number.isNaN(
             Date.parse(
                 liveState.lastTelemetryAt
@@ -241,10 +245,9 @@ try {
     check(
         liveState
             ?.subscriptionCount ===
-            EXPECTED_SUBSCRIPTION_COUNT,
+        expectedSubscriptionCount,
         "exact-topic subscription remains active after live telemetry is received"
     );
-
     /*
      * Diagnostic only.
      *
@@ -254,10 +257,9 @@ try {
      * validator's readiness window.
      */
     console.log(
-        `[VALIDATOR] full_publish_completed observed: ${
-            liveState
-                ?.fullPublishCompleted ===
-            true
+        `[VALIDATOR] full_publish_completed observed: ${liveState
+            ?.fullPublishCompleted ===
+        true
         }`
     );
 

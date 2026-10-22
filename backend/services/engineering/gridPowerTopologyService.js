@@ -228,7 +228,6 @@ function telemetryNumericValue(
     );
 }
 
-
 function normalizeUnit(
     value
 ) {
@@ -249,6 +248,12 @@ function normalizeUnit(
             .trim()
             .toLowerCase();
 
+
+    /*
+    |--------------------------------------------------------------------------
+    | Direct explicit unit
+    |--------------------------------------------------------------------------
+    */
 
     if (
         [
@@ -277,6 +282,42 @@ function normalizeUnit(
 
         return GRID_POWER_UNIT
             .KW;
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Explicit unit embedded in VRM format metadata
+    |--------------------------------------------------------------------------
+    |
+    | Examples:
+    |
+    |     %.0F W
+    |     %.1F W
+    |     %.2F kW
+    |
+    | This is NOT magnitude-based unit inference.
+    |
+    | The unit is explicitly encoded in the persisted telemetry metadata.
+    |--------------------------------------------------------------------------
+    */
+
+    const formatUnitMatch =
+        normalized.match(
+            /(?:^|\s)(kw|w)\s*$/
+        );
+
+
+    if (
+        formatUnitMatch
+    ) {
+
+        return formatUnitMatch[1] ===
+            "kw"
+            ? GRID_POWER_UNIT
+                .KW
+            : GRID_POWER_UNIT
+                .W;
     }
 
 

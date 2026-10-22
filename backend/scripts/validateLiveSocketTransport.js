@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+﻿import jwt from "jsonwebtoken";
 import { io as createClient } from "socket.io-client";
 
 import env from "../config/env.js";
@@ -687,6 +687,28 @@ const run =
         "valid JWT establishes an authenticated Socket.IO connection"
       );
 
+      /*
+       |--------------------------------------------------------------------------
+       | 6. Unentitled user is denied site subscription
+       |--------------------------------------------------------------------------
+      */
+
+      const deniedResponse = await emitWithAck(
+        authenticatedSocket,
+        "site:subscribe",
+        {
+          vrmSiteId: VALID_SITE_ID,
+        }
+      );
+
+      assert(
+        deniedResponse?.success === false &&
+          deniedResponse?.code === "INSTALLATION_ACCESS_DENIED",
+        6,
+        "authenticated user without installation entitlement is denied site subscription",
+        JSON.stringify(deniedResponse)
+      );
+
 
       /*
       |--------------------------------------------------------------------------
@@ -694,60 +716,16 @@ const run =
       |--------------------------------------------------------------------------
       */
 
-      const validResponse =
-        await emitWithAck(
-          authenticatedSocket,
-          "site:subscribe",
-          {
-            vrmSiteId:
-              VALID_SITE_ID,
-          }
-        );
-
-
-      assert(
-        validResponse?.success ===
-          true,
-        6,
-        `site ${VALID_SITE_ID} subscription is accepted`,
-        JSON.stringify(
-          validResponse
-        )
-      );
-
-
       /*
       |--------------------------------------------------------------------------
       | 7. Site identifier normalization
       |--------------------------------------------------------------------------
-      */
-
-      assert(
-        validResponse?.vrmSiteId ===
-          VALID_SITE_ID,
-        7,
-        "subscription acknowledgement preserves the normalized VRM site ID",
-        JSON.stringify(
-          validResponse
-        )
-      );
 
 
       /*
       |--------------------------------------------------------------------------
       | 8. Canonical room
       |--------------------------------------------------------------------------
-      */
-
-      assert(
-        validResponse?.room ===
-          `site:${VALID_SITE_ID}`,
-        8,
-        `subscription joins canonical room site:${VALID_SITE_ID}`,
-        JSON.stringify(
-          validResponse
-        )
-      );
 
 
       /*

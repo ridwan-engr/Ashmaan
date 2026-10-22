@@ -30,6 +30,8 @@ import {
 }
     from "../services/security/authorizationRbacService.js";
 
+import alarmRoutes
+    from "./alarmRoutes.js";
 
 const router =
     express.Router();
@@ -51,6 +53,14 @@ router.use(
     requireActivePortalSession,
     requireDashboardRead,
     vrmRoutes
+);
+
+router.use(
+    "/alarms",
+    authenticatePortalAccessToken,
+    requireActivePortalSession,
+    requireDashboardRead,
+    alarmRoutes
 );
 
 router.use(

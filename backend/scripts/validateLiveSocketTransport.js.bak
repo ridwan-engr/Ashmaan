@@ -1,0 +1,904 @@
+import jwt from "jsonwebtoken";
+import { io as createClient } from "socket.io-client";
+
+import env from "../config/env.js";
+
+
+/*
+|--------------------------------------------------------------------------
+| ASHMAAN Live Transport Runtime Validator
+|--------------------------------------------------------------------------
+|
+| L.2
+|
+| Validates the deployed runtime contract of the Socket.IO transport.
+|
+| This validator:
+| - does not print JWT_SECRET
+| - does not print generated JWTs
+| - does not mutate telemetry
+| - does not alter scheduler cadence
+| - does not perform dispatch/control
+|
+|--------------------------------------------------------------------------
+*/
+
+
+const SOCKET_URL =
+  process.env.LIVE_SOCKET_VALIDATION_URL ??
+  `http://localhost:${env.port}`;
+
+
+const VALID_SITE_ID =
+  String(
+    process.env.LIVE_SOCKET_VALIDATION_SITE_ID ??
+    "18053"
+  );
+
+
+const NONEXISTENT_SITE_ID =
+  String(
+    process.env.LIVE_SOCKET_VALIDATION_MISSING_SITE_ID ??
+    "999999999"
+  );
+
+
+const CONNECTION_TIMEOUT_MS =
+  5_000;
+
+
+const ACK_TIMEOUT_MS =
+  5_000;
+
+
+/*
+|--------------------------------------------------------------------------
+| Validation state
+|--------------------------------------------------------------------------
+*/
+
+let passCount =
+  0;
+
+let failCount =
+  0;
+
+
+/*
+|--------------------------------------------------------------------------
+| Output helpers
+|--------------------------------------------------------------------------
+*/
+
+const pass = (
+  number,
+  message
+) => {
+  passCount +=
+    1;
+
+  console.log(
+    `PASS ${number}: ${message}`
+  );
+};
+
+
+const fail = (
+  number,
+  message,
+  details = null
+) => {
+  failCount +=
+    1;
+
+  console.error(
+    `FAIL ${number}: ${message}`
+  );
+
+  if (
+    details
+  ) {
+    console.error(
+      details
+    );
+  }
+};
+
+
+/*
+|--------------------------------------------------------------------------
+| Assertions
+|--------------------------------------------------------------------------
+*/
+
+const assert = (
+  condition,
+  number,
+  message,
+  details = null
+) => {
+  if (
+    condition
+  ) {
+    pass(
+      number,
+      message
+    );
+
+    return true;
+  }
+
+  fail(
+    number,
+    message,
+    details
+  );
+
+  return false;
+};
+
+
+/*
+|--------------------------------------------------------------------------
+| Socket factory
+|--------------------------------------------------------------------------
+*/
+
+const createSocket = ({
+  token,
+  authorizationHeader,
+} = {}) => {
+  const options = {
+    transports: [
+      "websocket",
+    ],
+
+    reconnection:
+      false,
+
+    timeout:
+      CONNECTION_TIMEOUT_MS,
+
+    forceNew:
+      true,
+  };
+
+
+  if (
+    token !== undefined
+  ) {
+    options.auth = {
+      token,
+    };
+  }
+
+
+  if (
+    authorizationHeader
+  ) {
+    options.extraHeaders = {
+      Authorization:
+        authorizationHeader,
+    };
+  }
+
+
+  return createClient(
+    SOCKET_URL,
+    options
+  );
+};
+
+
+/*
+|--------------------------------------------------------------------------
+| Wait for successful connection
+|--------------------------------------------------------------------------
+*/
+
+const waitForConnection = (
+  socket
+) =>
+  new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      const timer =
+        setTimeout(
+          () => {
+            cleanup();
+
+            reject(
+              new Error(
+                "Socket connection timed out."
+              )
+            );
+          },
+          CONNECTION_TIMEOUT_MS
+        );
+
+
+      const onConnect =
+        () => {
+          cleanup();
+
+          resolve();
+        };
+
+
+      const onError =
+        (
+          error
+        ) => {
+          cleanup();
+
+          reject(
+            error
+          );
+        };
+
+
+      const cleanup =
+        () => {
+          clearTimeout(
+            timer
+          );
+
+          socket.off(
+            "connect",
+            onConnect
+          );
+
+          socket.off(
+            "connect_error",
+            onError
+          );
+        };
+
+
+      socket.once(
+        "connect",
+        onConnect
+      );
+
+      socket.once(
+        "connect_error",
+        onError
+      );
+    }
+  );
+
+
+/*
+|--------------------------------------------------------------------------
+| Wait for rejected connection
+|--------------------------------------------------------------------------
+*/
+
+const waitForConnectionRejection = (
+  socket
+) =>
+  new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      const timer =
+        setTimeout(
+          () => {
+            cleanup();
+
+            reject(
+              new Error(
+                "Expected connection rejection timed out."
+              )
+            );
+          },
+          CONNECTION_TIMEOUT_MS
+        );
+
+
+      const onConnect =
+        () => {
+          cleanup();
+
+          reject(
+            new Error(
+              "Connection was unexpectedly accepted."
+            )
+          );
+        };
+
+
+      const onError =
+        (
+          error
+        ) => {
+          cleanup();
+
+          resolve(
+            error
+          );
+        };
+
+
+      const cleanup =
+        () => {
+          clearTimeout(
+            timer
+          );
+
+          socket.off(
+            "connect",
+            onConnect
+          );
+
+          socket.off(
+            "connect_error",
+            onError
+          );
+        };
+
+
+      socket.once(
+        "connect",
+        onConnect
+      );
+
+      socket.once(
+        "connect_error",
+        onError
+      );
+    }
+  );
+
+
+/*
+|--------------------------------------------------------------------------
+| Emit event with acknowledgement
+|--------------------------------------------------------------------------
+*/
+
+const emitWithAck = (
+  socket,
+  event,
+  payload
+) =>
+  new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      socket
+        .timeout(
+          ACK_TIMEOUT_MS
+        )
+        .emit(
+          event,
+          payload,
+          (
+            error,
+            response
+          ) => {
+            if (
+              error
+            ) {
+              reject(
+                error
+              );
+
+              return;
+            }
+
+
+            resolve(
+              response
+            );
+          }
+        );
+    }
+  );
+
+
+/*
+|--------------------------------------------------------------------------
+| Disconnect safely
+|--------------------------------------------------------------------------
+*/
+
+const disconnectSocket = (
+  socket
+) => {
+  if (
+    socket
+  ) {
+    socket.disconnect();
+  }
+};
+
+
+/*
+|--------------------------------------------------------------------------
+| Create short-lived validation JWT
+|--------------------------------------------------------------------------
+*/
+
+const createValidationToken =
+  () => {
+    if (
+      !env.jwtSecret
+    ) {
+      throw new Error(
+        "JWT_SECRET is required for the L.2 runtime validator."
+      );
+    }
+
+
+    return jwt.sign(
+      {
+        role:
+          "OPERATOR",
+      },
+      env.jwtSecret,
+      {
+        algorithm:
+          "HS256",
+
+        subject:
+          "l2-live-transport-validator",
+
+        expiresIn:
+          "5m",
+
+        jwtid:
+          `l2-${Date.now()}`,
+      }
+    );
+  };
+
+
+/*
+|--------------------------------------------------------------------------
+| Runtime validation
+|--------------------------------------------------------------------------
+*/
+
+const run =
+  async () => {
+    console.log(
+      "================================================"
+    );
+
+    console.log(
+      "ASHMAAN LIVE SOCKET TRANSPORT VALIDATION"
+    );
+
+    console.log(
+      "================================================"
+    );
+
+    console.log(
+      "Gate: L.2"
+    );
+
+    console.log(
+      `Target: ${SOCKET_URL}`
+    );
+
+    console.log(
+      `Validation site: ${VALID_SITE_ID}`
+    );
+
+    console.log(
+      "================================================"
+    );
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 1. JWT secret
+    |--------------------------------------------------------------------------
+    */
+
+    assert(
+      typeof env.jwtSecret ===
+        "string" &&
+        env.jwtSecret.trim() !==
+          "",
+      1,
+      "JWT signing secret is available without being printed"
+    );
+
+
+    if (
+      !env.jwtSecret
+    ) {
+      throw new Error(
+        "Cannot continue without JWT_SECRET."
+      );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 2. Anonymous connection rejection
+    |--------------------------------------------------------------------------
+    */
+
+    let anonymousSocket =
+      null;
+
+    try {
+      anonymousSocket =
+        createSocket();
+
+      const error =
+        await waitForConnectionRejection(
+          anonymousSocket
+        );
+
+
+      assert(
+        error?.data?.code ===
+          "AUTHENTICATION_REQUIRED",
+        2,
+        "anonymous Socket.IO connection is rejected with AUTHENTICATION_REQUIRED",
+        `Observed code: ${error?.data?.code ?? "NONE"}`
+      );
+    } catch (
+      error
+    ) {
+      fail(
+        2,
+        "anonymous Socket.IO connection rejection",
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      );
+    } finally {
+      disconnectSocket(
+        anonymousSocket
+      );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 3. Invalid JWT rejection
+    |--------------------------------------------------------------------------
+    */
+
+    let invalidTokenSocket =
+      null;
+
+    try {
+      invalidTokenSocket =
+        createSocket({
+          token:
+            "not-a-valid-jwt",
+        });
+
+
+      const error =
+        await waitForConnectionRejection(
+          invalidTokenSocket
+        );
+
+
+      assert(
+        error?.data?.code ===
+          "INVALID_AUTHENTICATION_TOKEN",
+        3,
+        "invalid JWT is rejected with INVALID_AUTHENTICATION_TOKEN",
+        `Observed code: ${error?.data?.code ?? "NONE"}`
+      );
+    } catch (
+      error
+    ) {
+      fail(
+        3,
+        "invalid JWT rejection",
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      );
+    } finally {
+      disconnectSocket(
+        invalidTokenSocket
+      );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 4. Create valid short-lived JWT
+    |--------------------------------------------------------------------------
+    */
+
+    let token =
+      null;
+
+    try {
+      token =
+        createValidationToken();
+
+      assert(
+        typeof token ===
+          "string" &&
+          token.length >
+            0,
+        4,
+        "short-lived validation JWT created without logging token material"
+      );
+    } catch (
+      error
+    ) {
+      fail(
+        4,
+        "short-lived validation JWT creation",
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      );
+    }
+
+
+    if (
+      !token
+    ) {
+      throw new Error(
+        "Cannot continue positive-path validation without a JWT."
+      );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | 5. Valid JWT connection
+    |--------------------------------------------------------------------------
+    */
+
+    let authenticatedSocket =
+      null;
+
+    try {
+      authenticatedSocket =
+        createSocket({
+          token,
+        });
+
+
+      await waitForConnection(
+        authenticatedSocket
+      );
+
+
+      assert(
+        authenticatedSocket.connected ===
+          true,
+        5,
+        "valid JWT establishes an authenticated Socket.IO connection"
+      );
+
+
+      /*
+      |--------------------------------------------------------------------------
+      | 6. Valid site subscription
+      |--------------------------------------------------------------------------
+      */
+
+      /*
+      |--------------------------------------------------------------------------
+      | 7. Site identifier normalization
+      |--------------------------------------------------------------------------
+      */
+
+      assert(
+        validResponse?.vrmSiteId ===
+          VALID_SITE_ID,
+        7,
+        "subscription acknowledgement preserves the normalized VRM site ID",
+        JSON.stringify(
+          validResponse
+        )
+      );
+
+
+      /*
+      |--------------------------------------------------------------------------
+      | 8. Canonical room
+      |--------------------------------------------------------------------------
+      */
+
+      assert(
+        validResponse?.room ===
+          `site:${VALID_SITE_ID}`,
+        8,
+        `subscription joins canonical room site:${VALID_SITE_ID}`,
+        JSON.stringify(
+          validResponse
+        )
+      );
+
+
+      /*
+      |--------------------------------------------------------------------------
+      | 9. Malformed site rejection
+      |--------------------------------------------------------------------------
+      */
+
+      const invalidSiteResponse =
+        await emitWithAck(
+          authenticatedSocket,
+          "site:subscribe",
+          {
+            vrmSiteId:
+              "not-a-site-id",
+          }
+        );
+
+
+      assert(
+        invalidSiteResponse?.success ===
+          false &&
+        invalidSiteResponse?.code ===
+          "INVALID_SITE_ID",
+        9,
+        "malformed VRM site ID is rejected with INVALID_SITE_ID",
+        JSON.stringify(
+          invalidSiteResponse
+        )
+      );
+
+
+      /*
+      |--------------------------------------------------------------------------
+      | 10. Nonexistent installation rejection
+      |--------------------------------------------------------------------------
+      */
+
+      const missingSiteResponse =
+        await emitWithAck(
+          authenticatedSocket,
+          "site:subscribe",
+          {
+            vrmSiteId:
+              NONEXISTENT_SITE_ID,
+          }
+        );
+
+
+      assert(
+        missingSiteResponse?.success ===
+          false &&
+        missingSiteResponse?.code ===
+          "SITE_NOT_FOUND",
+        10,
+        "nonexistent installation is rejected with SITE_NOT_FOUND",
+        JSON.stringify(
+          missingSiteResponse
+        )
+      );
+
+
+      /*
+      |--------------------------------------------------------------------------
+      | 11. Site unsubscription
+      |--------------------------------------------------------------------------
+      */
+
+      const unsubscribeResponse =
+        await emitWithAck(
+          authenticatedSocket,
+          "site:unsubscribe",
+          {
+            vrmSiteId:
+              VALID_SITE_ID,
+          }
+        );
+
+
+      assert(
+        unsubscribeResponse?.success ===
+          true &&
+        unsubscribeResponse?.vrmSiteId ===
+          VALID_SITE_ID &&
+        unsubscribeResponse?.room ===
+          `site:${VALID_SITE_ID}`,
+        11,
+        `site ${VALID_SITE_ID} unsubscription succeeds`,
+        JSON.stringify(
+          unsubscribeResponse
+        )
+      );
+    } catch (
+      error
+    ) {
+      fail(
+        5,
+        "authenticated Socket.IO runtime path",
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      );
+    } finally {
+      disconnectSocket(
+        authenticatedSocket
+      );
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Final gate
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      "================================================"
+    );
+
+    console.log(
+      `PASS: ${passCount}`
+    );
+
+    console.log(
+      `FAIL: ${failCount}`
+    );
+
+    console.log(
+      "================================================"
+    );
+
+
+    if (
+      failCount >
+      0
+    ) {
+      console.error(
+        "L.2 LIVE SOCKET TRANSPORT VALIDATION: FAIL"
+      );
+
+      process.exitCode =
+        1;
+
+      return;
+    }
+
+
+    console.log(
+      "L.2 LIVE SOCKET TRANSPORT VALIDATION: PASS"
+    );
+  };
+
+
+run()
+  .catch(
+    (
+      error
+    ) => {
+      console.error(
+        "L.2 LIVE SOCKET TRANSPORT VALIDATION: FAIL"
+      );
+
+      console.error(
+        error instanceof Error
+          ? error.message
+          : String(
+              error
+            )
+      );
+
+      process.exitCode =
+        1;
+    }
+  );

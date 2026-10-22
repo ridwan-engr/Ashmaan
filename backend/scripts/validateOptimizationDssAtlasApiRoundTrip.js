@@ -32,6 +32,53 @@ const API_BASE =
   (process.env.ASHMAAN_API_BASE_URL || "http://localhost:5000")
     .replace(/\/+$/, "");
 
+const LOGIN_URL = `${API_BASE}/api/v1/auth/login`;
+
+function getLoginCredentials() {
+  const email = process.env.ASHMAAN_E2E_LOGIN_EMAIL?.trim();
+  const password = process.env.ASHMAAN_E2E_LOGIN_PASSWORD;
+
+  assert(email, "ASHMAAN_E2E_LOGIN_EMAIL is missing");
+  assert(password, "ASHMAAN_E2E_LOGIN_PASSWORD is missing");
+
+  return { email, password };
+}
+
+async function getPortalAccessToken() {
+  const credentials = getLoginCredentials();
+
+  const response = await fetch(LOGIN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(credentials),
+  });
+
+  const payload = await response.json().catch(() => null);
+
+  assert(
+    response.ok,
+    `Portal login failed with HTTP ${response.status}: ${typeof payload?.message === "string"
+      ? payload.message
+      : "No safe error message returned"
+    }`
+  );
+
+  const accessToken =
+    payload?.accessToken ??
+    payload?.data?.accessToken ??
+    payload?.result?.accessToken;
+
+  assert(
+    typeof accessToken === "string" && accessToken.length > 0,
+    "Portal login succeeded but returned no access token in the expected response fields"
+  );
+
+  return accessToken;
+}
+
 let assertions = 0;
 let cleanupKey = null;
 let connectedHere = false;
@@ -225,6 +272,13 @@ try {
   );
   pass(`MongoDB Atlas connection is open (${mongoose.connection.name})`);
 
+  const accessToken = await getPortalAccessToken();
+  pass("Portal login returned an access token");
+
+  const authHeaders = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+  };
   const repository =
     createMongooseOptimizationDssPersistenceRepository({
       model: OptimizationDssRecommendation,
@@ -247,7 +301,7 @@ try {
 
   assert(
     persisted.status ===
-      OPTIMIZATION_DSS_PERSISTENCE_RECORD_STATUS.PERSISTED,
+    OPTIMIZATION_DSS_PERSISTENCE_RECORD_STATUS.PERSISTED,
     `persistence service returned ${persisted.status}`
   );
   assert(persisted.persisted === true, "persisted flag is not true");
@@ -256,7 +310,9 @@ try {
   const detailUrl =
     `${API_BASE}/api/optimization-dss/recommendations/${encodeURIComponent(persistenceKey)}`;
 
-  const detailResponse = await fetch(detailUrl);
+  const detailResponse = await fetch(detailUrl, {
+    headers: authHeaders,
+  });
   assert(
     detailResponse.status === 200,
     `detail API returned HTTP ${detailResponse.status}`
@@ -297,7 +353,9 @@ try {
   const listUrl =
     `${API_BASE}/api/optimization-dss/recommendations?page=1&limit=100`;
 
-  const listResponse = await fetch(listUrl);
+  const listResponse = await fetch(listUrl, {
+    headers: authHeaders,
+  });
   assert(listResponse.status === 200, `list API returned HTTP ${listResponse.status}`);
 
   const listPayload = await listResponse.json();
